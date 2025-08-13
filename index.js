@@ -56,7 +56,7 @@ const io = new Server(server, {
   },
 });
 
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 5001;
 const MONGO_URI = process.env.MONGODB_URI;
 const JWT_SECRET = process.env.JWT_SECRET;
 const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET;
@@ -103,7 +103,6 @@ app.use(helmet({
         'https://khashaba-dasbored.vercel.app',
         `ws://localhost:${PORT}`,
         `wss://localhost:${PORT}`,
-        'https://khashaba-backend-production.up.railway.app',
       ],
       imgSrc: ["'self'", 'data:'],
       fontSrc: ["'self'", 'https:'],
@@ -132,11 +131,9 @@ app.use(cors({
   },
   methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE'],
   credentials: true,
-  allowedHeaders: ['Content-Type', 'X-CSRF-Token', 'Authorization'],
 }));
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Credentials', 'true');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, X-CSRF-Token, Authorization');
   next();
 });
 app.use(express.json({ limit: '10mb' }));
@@ -147,7 +144,7 @@ app.use(rateLimit({
   message: { message: 'Too many requests, please try again later' },
 }));
 app.use((req, res, next) => {
-  logger.info(`Request: ${req.method} ${req.url} Body: ${JSON.stringify(req.body)} Headers: ${JSON.stringify(req.headers)}`);
+  logger.info(`Request: ${req.method} ${req.url} Body: ${JSON.stringify(req.body)}`);
   next();
 });
 app.options('*', cors());
@@ -290,7 +287,7 @@ const handleValidationErrors = (req, res, next) => {
 };
 
 const verifyToken = (req, res, next) => {
-  const token = req.cookies.accessToken;
+  const token = req.cookies.accessToken || req.headers.authorization?.split(' ')[1];
   if (!token) {
     logger.warn('No access token provided');
     return res.status(401).json({ message: 'No access token provided' });
@@ -318,7 +315,6 @@ const verifyRefreshToken = async (req, res, next) => {
     const decoded = jwt.verify(refreshToken, JWT_REFRESH_SECRET);
     const admin = await Admin.findById(decoded.adminId).lean();
     if (!admin || admin.refreshToken !== refreshToken) {
-      logger.warn('Invalid refresh token');
       return res.status(401).json({ message: 'Invalid refresh token' });
     }
     req.adminId = decoded.adminId;
@@ -337,14 +333,7 @@ io.on('connection', (socket) => {
 
 // Routes
 app.get('/api/csrf-token', csrfProtection, (req, res) => {
-  try {
-    const token = req.csrfToken();
-    logger.info(`CSRF token generated: ${token}`);
-    res.json({ csrfToken: token });
-  } catch (error) {
-    logger.error('CSRF token generation error:', error);
-    res.status(500).json({ message: 'Failed to generate CSRF token' });
-  }
+  res.json({ csrfToken: req.csrfToken() });
 });
 
 app.post('/api/admin/register', [
@@ -367,7 +356,7 @@ app.post('/api/admin/register', [
   }
 });
 
-app.post('/api/admin/login', rateLimit({ windowMs: 15 * 60 * 1000, max: 50 }), [
+app.post('/api/admin/login', rateLimit({ windowMs: 15 * 60 * 1000, max: 5 }), [
   body('username').trim().notEmpty().withMessage('Username is required'),
   body('password').trim().notEmpty().withMessage('Password is required'),
   handleValidationErrors,
@@ -389,15 +378,17 @@ app.post('/api/admin/login', rateLimit({ windowMs: 15 * 60 * 1000, max: 50 }), [
       secure: process.env.NODE_ENV === 'production',
       sameSite: process.env.NODE_ENV === 'production' ? 'None' : 'Lax',
       maxAge: 3600000, // 1 hour
+      path: '/',
     });
     res.cookie('refreshToken', refreshToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: process.env.NODE_ENV === 'production' ? 'None' : 'Lax',
       maxAge: 7 * 24 * 3600000, // 7 days
+      path: '/',
     });
 
-    return res.json({ message: 'Login successful' });
+    return res.json({ message: 'Login successful', accessToken, refreshToken });
   } catch (error) {
     logger.error('Login error:', error);
     res.status(500).json({ message: 'Server error' });
@@ -412,8 +403,9 @@ app.post('/api/admin/refresh-token', rateLimit({ windowMs: 15 * 60 * 1000, max: 
       secure: process.env.NODE_ENV === 'production',
       sameSite: process.env.NODE_ENV === 'production' ? 'None' : 'Lax',
       maxAge: 3600000, // 1 hour
+      path: '/',
     });
-    res.json({ message: 'Token refreshed' });
+    res.json({ message: 'Token refreshed', accessToken });
   } catch (error) {
     logger.error('Refresh token error:', error);
     res.status(500).json({ message: 'Server error' });
@@ -425,11 +417,13 @@ app.post('/api/admin/logout', (req, res) => {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
     sameSite: process.env.NODE_ENV === 'production' ? 'None' : 'Lax',
+    path: '/',
   });
   res.clearCookie('refreshToken', {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
     sameSite: process.env.NODE_ENV === 'production' ? 'None' : 'Lax',
+    path: '/',
   });
   res.json({ message: 'Logout successful' });
 });
@@ -713,8 +707,9 @@ app.post('/api/appointments', [
   body('phone').trim().matches(/^\+?\d{10,15}$/).withMessage('Invalid phone number'),
   body('email').optional().isEmail().normalizeEmail().withMessage('Invalid email'),
   body('date').trim().notEmpty().isISO8601().withMessage('Invalid date format'),
-  body('time').trim().notEmpty().matches(/^\d{2}:00$/).withMessage('Invalid time format'),
+  body('time').trim().notEmpty().matches(/^\d{2}:[0-3][0]$/).withMessage('Invalid time format'),
   body('language').optional().isIn(['ar', 'en']).withMessage('Invalid language'),
+  body('notes').optional().trim(),
   handleValidationErrors,
 ], async (req, res) => {
   try {
@@ -848,29 +843,18 @@ app.patch('/api/appointments/:id/status', verifyToken, csrfProtection, [
     const { status, language = 'ar' } = req.body;
 
     const appointment = await Appointment.findById(id);
-    if (!appointment) {
-      logger.warn(`Appointment not found: ${id}`);
-      return res.status(404).json({ message: language === 'ar' ? 'الموعد غير موجود' : 'Appointment not found' });
-    }
+    if (!appointment) return res.status(404).json({ message: language === 'ar' ? 'الموعد غير موجود' : 'Appointment not found' });
 
     if (status === 'approved') {
       const existingApproved = await Appointment.findOne({ date: appointment.date, time: appointment.time, status: 'approved' }).lean();
-      if (existingApproved && existingApproved._id.toString() !== id) {
-        logger.warn(`Slot already approved for another appointment: ${appointment.date} ${appointment.time}`);
-        return res.status(400).json({ message: language === 'ar' ? 'الموعد محجوز مسبقًا' : 'Slot already approved for another appointment' });
-      }
+      if (existingApproved && existingApproved._id.toString() !== id) return res.status(400).json({ message: language === 'ar' ? 'الموعد محجوز مسبقًا' : 'Slot already approved for another appointment' });
     }
 
     appointment.status = status;
     appointment.updatedAt = new Date();
     await appointment.save();
 
-    const activity = new Activity({
-      appointmentId: id,
-      action: 'status_updated',
-      details: `Status changed to ${status} by admin ${req.adminId}`,
-      adminId: req.adminId,
-    });
+    const activity = new Activity({ appointmentId: id, action: 'status_updated', details: `Status changed to ${status}`, adminId: req.adminId });
     await activity.save();
 
     const populatedAppointment = await Appointment.findById(id).populate('patient', 'name phone email').lean();
@@ -889,7 +873,7 @@ app.patch('/api/appointments/:id/status', verifyToken, csrfProtection, [
 
     res.json({ message: language === 'ar' ? 'تم تحديث حالة الموعد' : 'Appointment status updated', appointment: populatedAppointment });
   } catch (error) {
-    logger.error(`Update status error for appointment ${req.params.id}:`, error);
+    logger.error('Update status error:', error);
     res.status(500).json({ message: 'Server error' });
   }
 });
@@ -1022,7 +1006,7 @@ app.get('/api/patients/:phone/appointments', async (req, res) => {
 // Error handling middleware
 app.use((err, req, res, next) => {
   if (err.code === 'EBADCSRFTOKEN') {
-    logger.warn(`CSRF token validation failed for ${req.method} ${req.url}`);
+    logger.warn('CSRF token validation failed');
     return res.status(403).json({ message: 'Invalid CSRF token' });
   }
   logger.error(`Unhandled error: ${err.message}`, { stack: err.stack });
@@ -1044,7 +1028,7 @@ server.listen(PORT, () => {
   logger.info(`Server running on port ${PORT}`);
 });
 
-// Graceful shutdown (continued)
+// Graceful shutdown
 process.on('SIGTERM', async () => {
   logger.info('SIGTERM received. Closing server...');
   server.close(() => {
@@ -1054,16 +1038,4 @@ process.on('SIGTERM', async () => {
       process.exit(0);
     });
   });
-});
-
-// Handle uncaught exceptions
-process.on('uncaughtException', (error) => {
-  logger.error('Uncaught Exception:', error);
-  process.exit(1);
-});
-
-// Handle unhandled promise rejections
-process.on('unhandledRejection', (reason, promise) => {
-  logger.error('Unhandled Rejection at:', promise, 'reason:', reason);
-  process.exit(1);
 });
