@@ -38,7 +38,7 @@ const io = new Server(server, {
     origin: (origin, callback) => {
       const allowedOrigins = [
         process.env.CORS_ORIGIN,
-       'http://localhost:3000',
+        'http://localhost:3000',
         'http://localhost:5173',
         'https://dr-khashaba.tsd-education.com',
         'https://dr-qami.vercel.app',
@@ -86,7 +86,7 @@ app.use(helmet({
       connectSrc: [
         "'self'",
         process.env.CORS_ORIGIN,
-          'http://localhost:3000',
+        'http://localhost:3000',
         'http://localhost:5173',
         'https://dr-khashaba.tsd-education.com',
         'https://dr-qami.vercel.app',
@@ -108,15 +108,11 @@ app.use(cors({
   origin: (origin, callback) => {
     const allowedOrigins = [
       process.env.CORS_ORIGIN,
-       'http://localhost:3000',
-        'http://localhost:5173',
-        'https://dr-khashaba.tsd-education.com',
-        'https://dr-qami.vercel.app',
-        'https://khashaba-dasbored.vercel.app',       'http://localhost:3000',
-        'http://localhost:5173',
-        'https://dr-khashaba.tsd-education.com',
-        'https://dr-qami.vercel.app',
-        'https://khashaba-dasbored.vercel.app',
+      'http://localhost:3000',
+      'http://localhost:5173',
+      'https://dr-khashaba.tsd-education.com',
+      'https://dr-qami.vercel.app',
+      'https://khashaba-dasbored.vercel.app',
     ];
     if (!origin || allowedOrigins.includes(origin)) {
       callback(null, true);
@@ -804,9 +800,8 @@ app.get('/api/partial-bookings', verifyToken, async (req, res) => {
 
 app.get('/api/appointments', verifyToken, async (req, res) => {
   try {
-    const { status, date } = req.query;
-    const query = {};
-    if (status) query.status = status;
+    const { status, date } = req.query; 
+      query.status = status;
     if (date) query.date = date;
 
     const appointments = await Appointment.find(query).populate('patient', 'name phone email').sort({ date: 1, time: 1 }).lean();
