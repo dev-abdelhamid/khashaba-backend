@@ -21,6 +21,7 @@ import { createWriteStream } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import PDFDocument from 'pdfkit';
+import csrf from 'csurf'; // إضافة مكتبة CSRF
 
 dotenv.config();
 
@@ -42,6 +43,8 @@ const io = new Server(server, {
         'http://localhost:5173',
         'https://dr-khashaba.tsd-education.com',
         'https://dr-qami.vercel.app',
+        'https://khashaba-dasbored.vercel.app',
+
       ];
       if (!origin || allowedOrigins.includes(origin)) {
         callback(null, true);
@@ -74,6 +77,9 @@ const logger = winston.createLogger({
   ],
 });
 
+// CSRF Middleware
+const csrfProtection = csrf({ cookie: { httpOnly: true, secure: process.env.NODE_ENV === 'production', sameSite: 'None' } });
+
 // Middleware
 app.use(compression());
 app.use(helmet({
@@ -88,8 +94,11 @@ app.use(helmet({
         'http://localhost:3000',
         'http://localhost:5173',
         'https://dr-khashaba.tsd-education.com',
+        'https://dr-qami.vercel.app',
+              'https://khashaba-dasbored.vercel.app',
+
         `ws://localhost:${PORT}`,
-        `wss://localhost:${PORT}`
+        `wss://localhost:${PORT}`,
       ],
       imgSrc: ["'self'", 'data:'],
       fontSrc: ["'self'", 'https:'],
@@ -106,7 +115,10 @@ app.use(cors({
       process.env.CORS_ORIGIN,
       'http://localhost:3000',
       'http://localhost:5173',
-      'https://dr-khashaba.tsd-education.com'
+      'https://dr-khashaba.tsd-education.com',
+      'https://dr-qami.vercel.app',
+            'https://khashaba-dasbored.vercel.app',
+
     ];
     if (!origin || allowedOrigins.includes(origin)) {
       callback(null, true);
@@ -153,7 +165,7 @@ mongoose.connect(MONGO_URI, {
     process.exit(1);
   });
 
-// Schemas
+// Schemas (نفس الإسكيمات بدون تغيير)
 const patientSchema = new mongoose.Schema({
   name: { type: String, required: true, trim: true },
   phone: { type: String, required: true, unique: true, trim: true },
@@ -275,10 +287,10 @@ const handleValidationErrors = (req, res, next) => {
 };
 
 const verifyToken = (req, res, next) => {
-  const token = req.cookies.token || req.headers.authorization?.split(' ')[1];
+  const token = req.cookies.accessToken; // تغيير من 'token' إلى 'accessToken'
   if (!token) {
-    logger.warn('No token provided');
-    return res.status(401).json({ message: 'No token provided' });
+    logger.warn('No access token provided');
+    return res.status(401).json({ message: 'No access token provided' });
   }
 
   try {
@@ -288,7 +300,7 @@ const verifyToken = (req, res, next) => {
     next();
   } catch (error) {
     logger.error('JWT verification error:', error);
-    res.status(401).json({ message: 'Invalid or expired token' });
+    res.status(401).json({ message: 'Invalid or expired access token' });
   }
 };
 
@@ -320,6 +332,11 @@ io.on('connection', (socket) => {
 });
 
 // Routes
+// إضافة إندبوينت لتوليد CSRF token
+app.get('/api/csrf-token', csrfProtection, (req, res) => {
+  res.json({ csrfToken: req.csrfToken() });
+});
+
 app.post('/api/admin/register', [
   body('username').trim().notEmpty().isLength({ min: 3 }).withMessage('Username must be at least 3 characters'),
   body('password').trim().isLength({ min: 8 }).withMessage('Password must be at least 8 characters'),
@@ -348,24 +365,28 @@ app.post('/api/admin/login', rateLimit({ windowMs: 15 * 60 * 1000, max: 5 }), [
   try {
     const { username, password } = req.body;
     const admin = await Admin.findOne({ username }).lean();
-    if (!admin || !(await bcrypt.compare(password, admin.password))) return res.status(401).json({ message: 'Invalid credentials' });
+    if (!admin || !(await bcrypt.compare(password, admin.password))) {
+      logger.warn(`Failed login attempt for username: ${username}`);
+      return res.status(401).json({ message: 'Invalid credentials' });
+    }
 
-    const token = jwt.sign({ adminId: admin._id }, JWT_SECRET, { expiresIn: '1h' });
+    const accessToken = jwt.sign({ adminId: admin._id }, JWT_SECRET, { expiresIn: '1h' });
     const refreshToken = jwt.sign({ adminId: admin._id }, JWT_REFRESH_SECRET, { expiresIn: '7d' });
     await Admin.updateOne({ _id: admin._id }, { refreshToken });
 
-    res.cookie('token', token, {
+    res.cookie('accessToken', accessToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
-      maxAge: 3600000,
+      sameSite: process.env.NODE_ENV === 'production' ? 'None' : 'Lax', // تغيير إلى 'None' في البيئة الإنتاجية
+      maxAge: 3600000, // 1 hour
     });
     res.cookie('refreshToken', refreshToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
-      maxAge: 7 * 24 * 3600000,
+      sameSite: process.env.NODE_ENV === 'production' ? 'None' : 'Lax',
+      maxAge: 7 * 24 * 3600000, // 7 days
     });
+
     return res.json({ message: 'Login successful' });
   } catch (error) {
     logger.error('Login error:', error);
@@ -373,14 +394,14 @@ app.post('/api/admin/login', rateLimit({ windowMs: 15 * 60 * 1000, max: 5 }), [
   }
 });
 
-app.post('/api/admin/refresh-token', verifyRefreshToken, async (req, res) => {
+app.post('/api/admin/refresh-token', rateLimit({ windowMs: 15 * 60 * 1000, max: 10 }), verifyRefreshToken, async (req, res) => {
   try {
-    const token = jwt.sign({ adminId: req.adminId }, JWT_SECRET, { expiresIn: '1h' });
-    res.cookie('token', token, {
+    const accessToken = jwt.sign({ adminId: req.adminId }, JWT_SECRET, { expiresIn: '1h' });
+    res.cookie('accessToken', accessToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
-      maxAge: 3600000,
+      sameSite: process.env.NODE_ENV === 'production' ? 'None' : 'Lax',
+      maxAge: 3600000, // 1 hour
     });
     res.json({ message: 'Token refreshed' });
   } catch (error) {
@@ -390,19 +411,20 @@ app.post('/api/admin/refresh-token', verifyRefreshToken, async (req, res) => {
 });
 
 app.post('/api/admin/logout', (req, res) => {
-  res.clearCookie('token', {
+  res.clearCookie('accessToken', {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
-    sameSite: 'strict',
+    sameSite: process.env.NODE_ENV === 'production' ? 'None' : 'Lax',
   });
   res.clearCookie('refreshToken', {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
-    sameSite: 'strict',
+    sameSite: process.env.NODE_ENV === 'production' ? 'None' : 'Lax',
   });
   res.json({ message: 'Logout successful' });
 });
 
+// باقي الروتات (بدون تغيير كبير، بس إضافة CSRF protection لبعض النقاط الحساسة)
 app.get('/api/health', async (req, res) => {
   try {
     const [patientCount, appointmentCount] = await Promise.all([Patient.countDocuments(), Appointment.countDocuments()]);
@@ -489,7 +511,7 @@ app.get('/api/dashboard/stats', verifyToken, async (req, res) => {
   }
 });
 
-app.get('/api/appointments/export', verifyToken, async (req, res) => {
+app.get('/api/appointments/export', verifyToken, csrfProtection, async (req, res) => {
   try {
     const { status, date, format, language } = req.query;
     const query = {};
@@ -807,7 +829,7 @@ app.get('/api/appointments', verifyToken, async (req, res) => {
   }
 });
 
-app.patch('/api/appointments/:id/status', verifyToken, [
+app.patch('/api/appointments/:id/status', verifyToken, csrfProtection, [
   body('status').isIn(['pending', 'approved', 'rejected', 'completed']).withMessage('Invalid status'),
   body('language').optional().isIn(['ar', 'en']).withMessage('Invalid language'),
   handleValidationErrors,
@@ -852,7 +874,7 @@ app.patch('/api/appointments/:id/status', verifyToken, [
   }
 });
 
-app.delete('/api/appointments/:id', verifyToken, async (req, res) => {
+app.delete('/api/appointments/:id', verifyToken, csrfProtection, async (req, res) => {
   try {
     const { id } = req.params;
     const appointment = await Appointment.findById(id);
@@ -912,7 +934,7 @@ app.get('/api/patients/:id', verifyToken, async (req, res) => {
   }
 });
 
-app.put('/api/patients/:id', verifyToken, [
+app.put('/api/patients/:id', verifyToken, csrfProtection, [
   body('name').trim().notEmpty().isLength({ min: 3 }).withMessage('Name must be at least 3 characters'),
   body('phone').trim().matches(/^\+?\d{10,15}$/).withMessage('Invalid phone number'),
   body('email').optional().isEmail().normalizeEmail().withMessage('Invalid email'),
@@ -941,7 +963,7 @@ app.put('/api/patients/:id', verifyToken, [
   }
 });
 
-app.delete('/api/patients/:id', verifyToken, async (req, res) => {
+app.delete('/api/patients/:id', verifyToken, csrfProtection, async (req, res) => {
   try {
     const { id } = req.params;
     const patient = await Patient.findById(id);
@@ -979,6 +1001,10 @@ app.get('/api/patients/:phone/appointments', async (req, res) => {
 
 // Error handling middleware
 app.use((err, req, res, next) => {
+  if (err.code === 'EBADCSRFTOKEN') {
+    logger.warn('CSRF token validation failed');
+    return res.status(403).json({ message: 'Invalid CSRF token' });
+  }
   logger.error(`Unhandled error: ${err.message}`, { stack: err.stack });
   res.status(500).json({ message: 'Internal server error' });
 });
