@@ -1,3 +1,4 @@
+
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
@@ -56,7 +57,7 @@ const io = new Server(server, {
   },
 });
 
-const PORT = process.env.PORT || 5001; // تغيير إلى 5001 لتجنب EADDRINUSE
+const PORT = process.env.PORT || 5001;
 const MONGO_URI = process.env.MONGODB_URI;
 const JWT_SECRET = process.env.JWT_SECRET;
 const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET;
@@ -97,6 +98,7 @@ app.use(helmet({
         'https://khashaba-dasbored.vercel.app',
         `ws://localhost:${PORT}`,
         `wss://localhost:${PORT}`,
+        `wss://khashaba-backend-production.up.railway.app`,
       ],
       imgSrc: ["'self'", 'data:'],
       fontSrc: ["'self'", 'https:'],
@@ -133,7 +135,7 @@ app.use((req, res, next) => {
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(rateLimit({
-  windowMs: 5 * 60 * 1000, // 15 minutes
+  windowMs: 5 * 60 * 1000, // 5 minutes
   max: 5000,
   message: { message: 'Too many requests, please try again later' },
 }));
@@ -162,19 +164,19 @@ mongoose.connect(MONGO_URI, {
     process.exit(1);
   });
 
-// Schemas (إزالة الفهارس المكررة)
+// Schemas
 const patientSchema = new mongoose.Schema({
   name: { type: String, required: true, trim: true },
-  phone: { type: String, required: true, unique: true, trim: true }, // unique يضيف فهرس تلقائي
+  phone: { type: String, required: true, unique: true, trim: true },
   email: { type: String, trim: true, lowercase: true },
   isNewPatient: { type: Boolean, default: true },
   appointments: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Appointment' }],
 }, { timestamps: true });
 
-patientSchema.index({ createdAt: 1 }); // الإبقاء على فهرس createdAt فقط
+patientSchema.index({ createdAt: 1 });
 
 const adminSchema = new mongoose.Schema({
-  username: { type: String, required: true, unique: true, trim: true, lowercase: true }, // unique يضيف فهرس تلقائي
+  username: { type: String, required: true, unique: true, trim: true, lowercase: true },
   password: { type: String, required: true },
   refreshToken: { type: String },
 }, { timestamps: true });
@@ -499,6 +501,102 @@ app.get('/api/dashboard/stats', verifyToken, async (req, res) => {
     });
   } catch (error) {
     logger.error('Stats error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// New consolidated /api/dashboard endpoint
+app.get('/api/dashboard', verifyToken, async (req, res) => {
+  try {
+    const period = req.query.period || 'day';
+    const now = new Date();
+    let startDate;
+    switch (period) {
+      case 'day':
+        startDate = subDays(now, 1);
+        break;
+      case 'week':
+        startDate = subWeeks(now, 1);
+        break;
+      case 'month':
+        startDate = subMonths(now, 1);
+        break;
+      case 'year':
+        startDate = subYears(now, 1);
+        break;
+      default:
+        startDate = subDays(now, 1);
+    }
+
+    const matchFilter = { createdAt: { $gte: startDate } };
+    const today = format(new Date(), 'yyyy-MM-dd');
+
+    const [
+      totalPatients,
+      totalAppointments,
+      pendingAppointments,
+      approvedAppointments,
+      rejectedAppointments,
+      completedAppointments,
+      todaysAppointments,
+      newPatients,
+      returningPatients,
+      languageBreakdown,
+      visitsCount,
+      partialsCount,
+      adClicks,
+      activities,
+      appointments
+    ] = await Promise.all([
+      Patient.countDocuments(matchFilter),
+      Appointment.countDocuments(matchFilter),
+      Appointment.countDocuments({ ...matchFilter, status: 'pending' }),
+      Appointment.countDocuments({ ...matchFilter, status: 'approved' }),
+      Appointment.countDocuments({ ...matchFilter, status: 'rejected' }),
+      Appointment.countDocuments({ ...matchFilter, status: 'completed' }),
+      Appointment.find({ date: today }).populate('patient', 'name phone email').sort({ time: 1 }).lean(),
+      Patient.countDocuments({ ...matchFilter, isNewPatient: true }),
+      Patient.countDocuments({ ...matchFilter, isNewPatient: false }),
+      Appointment.aggregate([{ $match: matchFilter }, { $group: { _id: '$language', count: { $sum: 1 } } }]),
+      Visit.countDocuments(matchFilter),
+      PartialBooking.countDocuments(matchFilter),
+      AdClick.countDocuments(matchFilter),
+      Activity.find()
+        .populate({
+          path: 'appointmentId',
+          populate: { path: 'patient', select: 'name phone email' },
+        })
+        .sort({ createdAt: -1 })
+        .limit(10)
+        .lean(),
+      Appointment.find()
+        .populate('patient', 'name phone email')
+        .sort({ createdAt: -1 })
+        .limit(10)
+        .lean(),
+    ]);
+
+    res.json({
+      stats: {
+        totalPatients,
+        totalAppointments,
+        pendingAppointments,
+        approvedAppointments,
+        rejectedAppointments,
+        completedAppointments,
+        recentAppointments: todaysAppointments,
+        newPatients,
+        returningPatients,
+        languageBreakdown,
+        visitsCount,
+        partialsCount,
+        adClicks
+      },
+      activities,
+      appointments
+    });
+  } catch (error) {
+    logger.error('Dashboard error:', error);
     res.status(500).json({ message: 'Server error' });
   }
 });
