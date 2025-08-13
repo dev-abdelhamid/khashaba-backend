@@ -56,7 +56,7 @@ const io = new Server(server, {
   },
 });
 
-const PORT = process.env.PORT || 5001;
+const PORT = process.env.PORT || 5001; // تغيير إلى 5001 لتجنب EADDRINUSE
 const MONGO_URI = process.env.MONGODB_URI;
 const JWT_SECRET = process.env.JWT_SECRET;
 const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET;
@@ -77,13 +77,7 @@ const logger = winston.createLogger({
 });
 
 // CSRF Middleware
-const csrfProtection = csrf({
-  cookie: {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: process.env.NODE_ENV === 'production' ? 'None' : 'Lax',
-  },
-});
+const csrfProtection = csrf({ cookie: { httpOnly: true, secure: process.env.NODE_ENV === 'production', sameSite: process.env.NODE_ENV === 'production' ? 'None' : 'Lax' } });
 
 // Middleware
 app.use(compression());
@@ -103,8 +97,6 @@ app.use(helmet({
         'https://khashaba-dasbored.vercel.app',
         `ws://localhost:${PORT}`,
         `wss://localhost:${PORT}`,
-                'wss://khashaba-backend-production.up.railway.app', // Added production WebSocket URL
-
       ],
       imgSrc: ["'self'", 'data:'],
       fontSrc: ["'self'", 'https:'],
@@ -124,8 +116,6 @@ app.use(cors({
       'https://dr-khashaba.tsd-education.com',
       'https://dr-qami.vercel.app',
       'https://khashaba-dasbored.vercel.app',
-      'wss://khashaba-backend-production.up.railway.app', // Added production WebSocket URL
-
     ];
     if (!origin || allowedOrigins.includes(origin)) {
       callback(null, true);
@@ -172,19 +162,19 @@ mongoose.connect(MONGO_URI, {
     process.exit(1);
   });
 
-// Schemas
+// Schemas (إزالة الفهارس المكررة)
 const patientSchema = new mongoose.Schema({
   name: { type: String, required: true, trim: true },
-  phone: { type: String, required: true, unique: true, trim: true },
+  phone: { type: String, required: true, unique: true, trim: true }, // unique يضيف فهرس تلقائي
   email: { type: String, trim: true, lowercase: true },
   isNewPatient: { type: Boolean, default: true },
   appointments: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Appointment' }],
 }, { timestamps: true });
 
-patientSchema.index({ createdAt: 1 });
+patientSchema.index({ createdAt: 1 }); // الإبقاء على فهرس createdAt فقط
 
 const adminSchema = new mongoose.Schema({
-  username: { type: String, required: true, unique: true, trim: true, lowercase: true },
+  username: { type: String, required: true, unique: true, trim: true, lowercase: true }, // unique يضيف فهرس تلقائي
   password: { type: String, required: true },
   refreshToken: { type: String },
 }, { timestamps: true });
@@ -291,7 +281,7 @@ const handleValidationErrors = (req, res, next) => {
 };
 
 const verifyToken = (req, res, next) => {
-  const token = req.cookies.accessToken || req.headers.authorization?.split(' ')[1];
+  const token = req.cookies.accessToken;
   if (!token) {
     logger.warn('No access token provided');
     return res.status(401).json({ message: 'No access token provided' });
@@ -382,17 +372,15 @@ app.post('/api/admin/login', rateLimit({ windowMs: 15 * 60 * 1000, max: 5 }), [
       secure: process.env.NODE_ENV === 'production',
       sameSite: process.env.NODE_ENV === 'production' ? 'None' : 'Lax',
       maxAge: 3600000, // 1 hour
-      path: '/',
     });
     res.cookie('refreshToken', refreshToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: process.env.NODE_ENV === 'production' ? 'None' : 'Lax',
       maxAge: 7 * 24 * 3600000, // 7 days
-      path: '/',
     });
 
-    return res.json({ message: 'Login successful', accessToken, refreshToken });
+    return res.json({ message: 'Login successful' });
   } catch (error) {
     logger.error('Login error:', error);
     res.status(500).json({ message: 'Server error' });
@@ -407,9 +395,8 @@ app.post('/api/admin/refresh-token', rateLimit({ windowMs: 15 * 60 * 1000, max: 
       secure: process.env.NODE_ENV === 'production',
       sameSite: process.env.NODE_ENV === 'production' ? 'None' : 'Lax',
       maxAge: 3600000, // 1 hour
-      path: '/',
     });
-    res.json({ message: 'Token refreshed', accessToken });
+    res.json({ message: 'Token refreshed' });
   } catch (error) {
     logger.error('Refresh token error:', error);
     res.status(500).json({ message: 'Server error' });
@@ -421,13 +408,11 @@ app.post('/api/admin/logout', (req, res) => {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
     sameSite: process.env.NODE_ENV === 'production' ? 'None' : 'Lax',
-    path: '/',
   });
   res.clearCookie('refreshToken', {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
     sameSite: process.env.NODE_ENV === 'production' ? 'None' : 'Lax',
-    path: '/',
   });
   res.json({ message: 'Logout successful' });
 });
@@ -711,9 +696,8 @@ app.post('/api/appointments', [
   body('phone').trim().matches(/^\+?\d{10,15}$/).withMessage('Invalid phone number'),
   body('email').optional().isEmail().normalizeEmail().withMessage('Invalid email'),
   body('date').trim().notEmpty().isISO8601().withMessage('Invalid date format'),
-  body('time').trim().notEmpty().matches(/^\d{2}:[0-3][0]$/).withMessage('Invalid time format'),
+  body('time').trim().notEmpty().matches(/^\d{2}:00$/).withMessage('Invalid time format'),
   body('language').optional().isIn(['ar', 'en']).withMessage('Invalid language'),
-  body('notes').optional().trim(),
   handleValidationErrors,
 ], async (req, res) => {
   try {
