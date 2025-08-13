@@ -2,7 +2,7 @@
 FROM node:20-alpine
 
 # تحديد مجلد العمل
-WORKDIR /app
+WORKDIR /index
 
 # نسخ ملفات المشروع
 COPY package*.json ./
