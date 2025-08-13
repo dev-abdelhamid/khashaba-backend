@@ -40,7 +40,8 @@ const io = new Server(server, {
         process.env.CORS_ORIGIN,
         'http://localhost:3000',
         'http://localhost:5173',
-        'https://dr-khashaba.tsd-education.com'
+        'https://dr-khashaba.tsd-education.com',
+        'https://dr-qami.vercel.app',
       ];
       if (!origin || allowedOrigins.includes(origin)) {
         callback(null, true);
