@@ -1,4 +1,3 @@
-
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
@@ -22,7 +21,6 @@ import { createWriteStream } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import PDFDocument from 'pdfkit';
-import csrf from 'csurf';
 
 dotenv.config();
 
@@ -40,7 +38,7 @@ const io = new Server(server, {
     origin: (origin, callback) => {
       const allowedOrigins = [
         process.env.CORS_ORIGIN,
-        'http://localhost:3000',
+       'http://localhost:3000',
         'http://localhost:5173',
         'https://dr-khashaba.tsd-education.com',
         'https://dr-qami.vercel.app',
@@ -57,7 +55,7 @@ const io = new Server(server, {
   },
 });
 
-const PORT = process.env.PORT || 5001;
+const PORT = process.env.PORT || 5000;
 const MONGO_URI = process.env.MONGODB_URI;
 const JWT_SECRET = process.env.JWT_SECRET;
 const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET;
@@ -77,9 +75,6 @@ const logger = winston.createLogger({
   ],
 });
 
-// CSRF Middleware
-const csrfProtection = csrf({ cookie: { httpOnly: true, secure: process.env.NODE_ENV === 'production', sameSite: process.env.NODE_ENV === 'production' ? 'None' : 'Lax' } });
-
 // Middleware
 app.use(compression());
 app.use(helmet({
@@ -91,7 +86,7 @@ app.use(helmet({
       connectSrc: [
         "'self'",
         process.env.CORS_ORIGIN,
-        'http://localhost:3000',
+          'http://localhost:3000',
         'http://localhost:5173',
         'https://dr-khashaba.tsd-education.com',
         'https://dr-qami.vercel.app',
@@ -113,11 +108,15 @@ app.use(cors({
   origin: (origin, callback) => {
     const allowedOrigins = [
       process.env.CORS_ORIGIN,
-      'http://localhost:3000',
-      'http://localhost:5173',
-      'https://dr-khashaba.tsd-education.com',
-      'https://dr-qami.vercel.app',
-      'https://khashaba-dasbored.vercel.app',
+       'http://localhost:3000',
+        'http://localhost:5173',
+        'https://dr-khashaba.tsd-education.com',
+        'https://dr-qami.vercel.app',
+        'https://khashaba-dasbored.vercel.app',       'http://localhost:3000',
+        'http://localhost:5173',
+        'https://dr-khashaba.tsd-education.com',
+        'https://dr-qami.vercel.app',
+        'https://khashaba-dasbored.vercel.app',
     ];
     if (!origin || allowedOrigins.includes(origin)) {
       callback(null, true);
@@ -135,8 +134,8 @@ app.use((req, res, next) => {
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(rateLimit({
-  windowMs: 5 * 60 * 1000, // 5 minutes
-  max: 5000,
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 1000,
   message: { message: 'Too many requests, please try again later' },
 }));
 app.use((req, res, next) => {
@@ -173,6 +172,7 @@ const patientSchema = new mongoose.Schema({
   appointments: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Appointment' }],
 }, { timestamps: true });
 
+patientSchema.index({ phone: 1 }, { unique: true });
 patientSchema.index({ createdAt: 1 });
 
 const adminSchema = new mongoose.Schema({
@@ -180,6 +180,8 @@ const adminSchema = new mongoose.Schema({
   password: { type: String, required: true },
   refreshToken: { type: String },
 }, { timestamps: true });
+
+adminSchema.index({ username: 1 }, { unique: true });
 
 const appointmentSchema = new mongoose.Schema({
   patient: { type: mongoose.Schema.Types.ObjectId, ref: 'Patient', required: true },
@@ -283,10 +285,10 @@ const handleValidationErrors = (req, res, next) => {
 };
 
 const verifyToken = (req, res, next) => {
-  const token = req.cookies.accessToken;
+  const token = req.cookies.token || req.headers.authorization?.split(' ')[1];
   if (!token) {
-    logger.warn('No access token provided');
-    return res.status(401).json({ message: 'No access token provided' });
+    logger.warn('No token provided');
+    return res.status(401).json({ message: 'No token provided' });
   }
 
   try {
@@ -296,7 +298,7 @@ const verifyToken = (req, res, next) => {
     next();
   } catch (error) {
     logger.error('JWT verification error:', error);
-    res.status(401).json({ message: 'Invalid or expired access token' });
+    res.status(401).json({ message: 'Invalid or expired token' });
   }
 };
 
@@ -328,10 +330,6 @@ io.on('connection', (socket) => {
 });
 
 // Routes
-app.get('/api/csrf-token', csrfProtection, (req, res) => {
-  res.json({ csrfToken: req.csrfToken() });
-});
-
 app.post('/api/admin/register', [
   body('username').trim().notEmpty().isLength({ min: 3 }).withMessage('Username must be at least 3 characters'),
   body('password').trim().isLength({ min: 8 }).withMessage('Password must be at least 8 characters'),
@@ -360,28 +358,24 @@ app.post('/api/admin/login', rateLimit({ windowMs: 15 * 60 * 1000, max: 5 }), [
   try {
     const { username, password } = req.body;
     const admin = await Admin.findOne({ username }).lean();
-    if (!admin || !(await bcrypt.compare(password, admin.password))) {
-      logger.warn(`Failed login attempt for username: ${username}`);
-      return res.status(401).json({ message: 'Invalid credentials' });
-    }
+    if (!admin || !(await bcrypt.compare(password, admin.password))) return res.status(401).json({ message: 'Invalid credentials' });
 
-    const accessToken = jwt.sign({ adminId: admin._id }, JWT_SECRET, { expiresIn: '1h' });
+    const token = jwt.sign({ adminId: admin._id }, JWT_SECRET, { expiresIn: '1h' });
     const refreshToken = jwt.sign({ adminId: admin._id }, JWT_REFRESH_SECRET, { expiresIn: '7d' });
     await Admin.updateOne({ _id: admin._id }, { refreshToken });
 
-    res.cookie('accessToken', accessToken, {
+    res.cookie('token', token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
-      sameSite: process.env.NODE_ENV === 'production' ? 'None' : 'Lax',
-      maxAge: 3600000, // 1 hour
+      sameSite: 'strict',
+      maxAge: 3600000,
     });
     res.cookie('refreshToken', refreshToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
-      sameSite: process.env.NODE_ENV === 'production' ? 'None' : 'Lax',
-      maxAge: 7 * 24 * 3600000, // 7 days
+      sameSite: 'strict',
+      maxAge: 7 * 24 * 3600000,
     });
-
     return res.json({ message: 'Login successful' });
   } catch (error) {
     logger.error('Login error:', error);
@@ -389,14 +383,14 @@ app.post('/api/admin/login', rateLimit({ windowMs: 15 * 60 * 1000, max: 5 }), [
   }
 });
 
-app.post('/api/admin/refresh-token', rateLimit({ windowMs: 15 * 60 * 1000, max: 10 }), verifyRefreshToken, async (req, res) => {
+app.post('/api/admin/refresh-token', verifyRefreshToken, async (req, res) => {
   try {
-    const accessToken = jwt.sign({ adminId: req.adminId }, JWT_SECRET, { expiresIn: '1h' });
-    res.cookie('accessToken', accessToken, {
+    const token = jwt.sign({ adminId: req.adminId }, JWT_SECRET, { expiresIn: '1h' });
+    res.cookie('token', token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
-      sameSite: process.env.NODE_ENV === 'production' ? 'None' : 'Lax',
-      maxAge: 3600000, // 1 hour
+      sameSite: 'strict',
+      maxAge: 3600000,
     });
     res.json({ message: 'Token refreshed' });
   } catch (error) {
@@ -406,15 +400,15 @@ app.post('/api/admin/refresh-token', rateLimit({ windowMs: 15 * 60 * 1000, max: 
 });
 
 app.post('/api/admin/logout', (req, res) => {
-  res.clearCookie('accessToken', {
+  res.clearCookie('token', {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
-    sameSite: process.env.NODE_ENV === 'production' ? 'None' : 'Lax',
+    sameSite: 'strict',
   });
   res.clearCookie('refreshToken', {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
-    sameSite: process.env.NODE_ENV === 'production' ? 'None' : 'Lax',
+    sameSite: 'strict',
   });
   res.json({ message: 'Logout successful' });
 });
@@ -505,103 +499,7 @@ app.get('/api/dashboard/stats', verifyToken, async (req, res) => {
   }
 });
 
-// New consolidated /api/dashboard endpoint
-app.get('/api/dashboard', verifyToken, async (req, res) => {
-  try {
-    const period = req.query.period || 'day';
-    const now = new Date();
-    let startDate;
-    switch (period) {
-      case 'day':
-        startDate = subDays(now, 1);
-        break;
-      case 'week':
-        startDate = subWeeks(now, 1);
-        break;
-      case 'month':
-        startDate = subMonths(now, 1);
-        break;
-      case 'year':
-        startDate = subYears(now, 1);
-        break;
-      default:
-        startDate = subDays(now, 1);
-    }
-
-    const matchFilter = { createdAt: { $gte: startDate } };
-    const today = format(new Date(), 'yyyy-MM-dd');
-
-    const [
-      totalPatients,
-      totalAppointments,
-      pendingAppointments,
-      approvedAppointments,
-      rejectedAppointments,
-      completedAppointments,
-      todaysAppointments,
-      newPatients,
-      returningPatients,
-      languageBreakdown,
-      visitsCount,
-      partialsCount,
-      adClicks,
-      activities,
-      appointments
-    ] = await Promise.all([
-      Patient.countDocuments(matchFilter),
-      Appointment.countDocuments(matchFilter),
-      Appointment.countDocuments({ ...matchFilter, status: 'pending' }),
-      Appointment.countDocuments({ ...matchFilter, status: 'approved' }),
-      Appointment.countDocuments({ ...matchFilter, status: 'rejected' }),
-      Appointment.countDocuments({ ...matchFilter, status: 'completed' }),
-      Appointment.find({ date: today }).populate('patient', 'name phone email').sort({ time: 1 }).lean(),
-      Patient.countDocuments({ ...matchFilter, isNewPatient: true }),
-      Patient.countDocuments({ ...matchFilter, isNewPatient: false }),
-      Appointment.aggregate([{ $match: matchFilter }, { $group: { _id: '$language', count: { $sum: 1 } } }]),
-      Visit.countDocuments(matchFilter),
-      PartialBooking.countDocuments(matchFilter),
-      AdClick.countDocuments(matchFilter),
-      Activity.find()
-        .populate({
-          path: 'appointmentId',
-          populate: { path: 'patient', select: 'name phone email' },
-        })
-        .sort({ createdAt: -1 })
-        .limit(10)
-        .lean(),
-      Appointment.find()
-        .populate('patient', 'name phone email')
-        .sort({ createdAt: -1 })
-        .limit(10)
-        .lean(),
-    ]);
-
-    res.json({
-      stats: {
-        totalPatients,
-        totalAppointments,
-        pendingAppointments,
-        approvedAppointments,
-        rejectedAppointments,
-        completedAppointments,
-        recentAppointments: todaysAppointments,
-        newPatients,
-        returningPatients,
-        languageBreakdown,
-        visitsCount,
-        partialsCount,
-        adClicks
-      },
-      activities,
-      appointments
-    });
-  } catch (error) {
-    logger.error('Dashboard error:', error);
-    res.status(500).json({ message: 'Server error' });
-  }
-});
-
-app.get('/api/appointments/export', verifyToken, csrfProtection, async (req, res) => {
+app.get('/api/appointments/export', verifyToken, async (req, res) => {
   try {
     const { status, date, format, language } = req.query;
     const query = {};
@@ -919,7 +817,7 @@ app.get('/api/appointments', verifyToken, async (req, res) => {
   }
 });
 
-app.patch('/api/appointments/:id/status', verifyToken, csrfProtection, [
+app.patch('/api/appointments/:id/status', verifyToken, [
   body('status').isIn(['pending', 'approved', 'rejected', 'completed']).withMessage('Invalid status'),
   body('language').optional().isIn(['ar', 'en']).withMessage('Invalid language'),
   handleValidationErrors,
@@ -964,7 +862,7 @@ app.patch('/api/appointments/:id/status', verifyToken, csrfProtection, [
   }
 });
 
-app.delete('/api/appointments/:id', verifyToken, csrfProtection, async (req, res) => {
+app.delete('/api/appointments/:id', verifyToken, async (req, res) => {
   try {
     const { id } = req.params;
     const appointment = await Appointment.findById(id);
@@ -1024,7 +922,7 @@ app.get('/api/patients/:id', verifyToken, async (req, res) => {
   }
 });
 
-app.put('/api/patients/:id', verifyToken, csrfProtection, [
+app.put('/api/patients/:id', verifyToken, [
   body('name').trim().notEmpty().isLength({ min: 3 }).withMessage('Name must be at least 3 characters'),
   body('phone').trim().matches(/^\+?\d{10,15}$/).withMessage('Invalid phone number'),
   body('email').optional().isEmail().normalizeEmail().withMessage('Invalid email'),
@@ -1053,7 +951,7 @@ app.put('/api/patients/:id', verifyToken, csrfProtection, [
   }
 });
 
-app.delete('/api/patients/:id', verifyToken, csrfProtection, async (req, res) => {
+app.delete('/api/patients/:id', verifyToken, async (req, res) => {
   try {
     const { id } = req.params;
     const patient = await Patient.findById(id);
@@ -1091,25 +989,11 @@ app.get('/api/patients/:phone/appointments', async (req, res) => {
 
 // Error handling middleware
 app.use((err, req, res, next) => {
-  if (err.code === 'EBADCSRFTOKEN') {
-    logger.warn('CSRF token validation failed');
-    return res.status(403).json({ message: 'Invalid CSRF token' });
-  }
   logger.error(`Unhandled error: ${err.message}`, { stack: err.stack });
   res.status(500).json({ message: 'Internal server error' });
 });
 
-// Start server with port conflict handling
-server.on('error', (error) => {
-  if (error.code === 'EADDRINUSE') {
-    logger.error(`Port ${PORT} is already in use. Please free the port or change the PORT environment variable.`);
-    process.exit(1);
-  } else {
-    logger.error('Server error:', error);
-    process.exit(1);
-  }
-});
-
+// Start server
 server.listen(PORT, () => {
   logger.info(`Server running on port ${PORT}`);
 });
