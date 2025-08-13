@@ -133,8 +133,8 @@ app.use((req, res, next) => {
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 1000,
+  windowMs: 5 * 60 * 1000, // 15 minutes
+  max: 5000,
   message: { message: 'Too many requests, please try again later' },
 }));
 app.use((req, res, next) => {
