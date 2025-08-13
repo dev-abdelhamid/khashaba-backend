@@ -103,6 +103,8 @@ app.use(helmet({
         'https://khashaba-dasbored.vercel.app',
         `ws://localhost:${PORT}`,
         `wss://localhost:${PORT}`,
+                'wss://khashaba-backend-production.up.railway.app', // Added production WebSocket URL
+
       ],
       imgSrc: ["'self'", 'data:'],
       fontSrc: ["'self'", 'https:'],
@@ -122,6 +124,8 @@ app.use(cors({
       'https://dr-khashaba.tsd-education.com',
       'https://dr-qami.vercel.app',
       'https://khashaba-dasbored.vercel.app',
+      'wss://khashaba-backend-production.up.railway.app', // Added production WebSocket URL
+
     ];
     if (!origin || allowedOrigins.includes(origin)) {
       callback(null, true);
