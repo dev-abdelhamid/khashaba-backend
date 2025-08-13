@@ -7,7 +7,7 @@ import helmet from 'helmet';
 import morgan from 'morgan';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcrypt';
-import { format, parse, isBefore, isAfter, startOfDay, addDays, isFriday, isSaturday } from 'date-fns';
+import { format, parse, isBefore, isAfter, startOfDay, addDays, subDays, subWeeks, subMonths, subYears } from 'date-fns';
 import { ar } from 'date-fns/locale';
 import { Server } from 'socket.io';
 import http from 'http';
@@ -61,6 +61,7 @@ const MONGO_URI = process.env.MONGODB_URI;
 const JWT_SECRET = process.env.JWT_SECRET;
 const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET;
 
+// Logger setup
 const logger = winston.createLogger({
   level: 'info',
   format: winston.format.combine(
@@ -75,6 +76,7 @@ const logger = winston.createLogger({
   ],
 });
 
+// CSRF Middleware
 const csrfProtection = csrf({
   cookie: {
     httpOnly: true,
@@ -83,6 +85,7 @@ const csrfProtection = csrf({
   },
 });
 
+// Middleware
 app.use(compression());
 app.use(helmet({
   contentSecurityPolicy: {
@@ -139,7 +142,7 @@ app.use((req, res, next) => {
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(rateLimit({
-  windowMs: 15 * 60 * 1000,
+  windowMs: 15 * 60 * 1000, // 15 minutes
   max: 1000,
   message: { message: 'Too many requests, please try again later' },
 }));
@@ -149,13 +152,15 @@ app.use((req, res, next) => {
 });
 app.options('*', cors());
 
+// Partial booking rate limit
 const partialRateLimiter = rateLimit({
-  windowMs: 60 * 1000,
+  windowMs: 60 * 1000, // 1 minute
   max: 5,
   message: { message: 'Too many partial data saves, please try again later' },
 });
 app.use('/api/partial-bookings', partialRateLimiter);
 
+// MongoDB connection
 mongoose.set('strictQuery', true);
 mongoose.connect(MONGO_URI, {
   maxPoolSize: 10,
@@ -166,6 +171,7 @@ mongoose.connect(MONGO_URI, {
     process.exit(1);
   });
 
+// Schemas
 const patientSchema = new mongoose.Schema({
   name: { type: String, required: true, trim: true },
   phone: { type: String, required: true, unique: true, trim: true },
@@ -241,6 +247,7 @@ const PartialBooking = mongoose.model('PartialBooking', partialBookingSchema);
 const Visit = mongoose.model('Visit', visitSchema);
 const AdClick = mongoose.model('AdClick', adClickSchema);
 
+// Email setup
 const transporter = nodemailer.createTransport({
   service: 'gmail',
   auth: {
@@ -252,6 +259,7 @@ const transporter = nodemailer.createTransport({
   maxMessages: 100,
 });
 
+// Helper functions
 const sendEmailNotification = async (options) => {
   try {
     await transporter.sendMail(options);
@@ -264,10 +272,9 @@ const sendEmailNotification = async (options) => {
 const isValidAppointmentTime = (date, time) => {
   const appointmentDate = parse(date, 'yyyy-MM-dd', new Date());
   const now = startOfDay(new Date());
-  const fourteenDaysFromNow = addDays(now, 14);
+  const fourDaysFromNow = addDays(now, 4);
 
-  if (isBefore(appointmentDate, now) || isAfter(appointmentDate, fourteenDaysFromNow)) return false;
-  if (isFriday(appointmentDate) || isSaturday(appointmentDate)) return false;
+  if (isBefore(appointmentDate, now) || isAfter(appointmentDate, fourDaysFromNow)) return false;
 
   const hour = parseInt(time.split(':')[0], 10);
   return hour >= 9 && hour <= 21;
@@ -322,11 +329,13 @@ const verifyRefreshToken = async (req, res, next) => {
   }
 };
 
+// WebSocket events
 io.on('connection', (socket) => {
   logger.info(`Client connected: ${socket.id}`);
   socket.on('disconnect', () => logger.info(`Client disconnected: ${socket.id}`));
 });
 
+// Routes
 app.get('/api/csrf-token', csrfProtection, (req, res) => {
   try {
     const token = req.csrfToken();
@@ -379,13 +388,13 @@ app.post('/api/admin/login', rateLimit({ windowMs: 15 * 60 * 1000, max: 50 }), [
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: process.env.NODE_ENV === 'production' ? 'None' : 'Lax',
-      maxAge: 3600000,
+      maxAge: 3600000, // 1 hour
     });
     res.cookie('refreshToken', refreshToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: process.env.NODE_ENV === 'production' ? 'None' : 'Lax',
-      maxAge: 7 * 24 * 3600000,
+      maxAge: 7 * 24 * 3600000, // 7 days
     });
 
     return res.json({ message: 'Login successful' });
@@ -402,7 +411,7 @@ app.post('/api/admin/refresh-token', rateLimit({ windowMs: 15 * 60 * 1000, max: 
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: process.env.NODE_ENV === 'production' ? 'None' : 'Lax',
-      maxAge: 3600000,
+      maxAge: 3600000, // 1 hour
     });
     res.json({ message: 'Token refreshed' });
   } catch (error) {
@@ -435,12 +444,223 @@ app.get('/api/health', async (req, res) => {
   }
 });
 
+app.get('/api/dashboard/stats', verifyToken, async (req, res) => {
+  try {
+    const period = req.query.period || 'day';
+    const now = new Date();
+    let startDate;
+    switch (period) {
+      case 'day':
+        startDate = subDays(now, 1);
+        break;
+      case 'week':
+        startDate = subWeeks(now, 1);
+        break;
+      case 'month':
+        startDate = subMonths(now, 1);
+        break;
+      case 'year':
+        startDate = subYears(now, 1);
+        break;
+      default:
+        startDate = subDays(now, 1);
+    }
+
+    const matchFilter = { createdAt: { $gte: startDate } };
+    const today = format(new Date(), 'yyyy-MM-dd');
+
+    const [
+      totalPatients,
+      totalAppointments,
+      pendingAppointments,
+      approvedAppointments,
+      rejectedAppointments,
+      completedAppointments,
+      todaysAppointments,
+      newPatients,
+      returningPatients,
+      languageBreakdown,
+      visitsCount,
+      partialsCount,
+      adClicks
+    ] = await Promise.all([
+      Patient.countDocuments(matchFilter),
+      Appointment.countDocuments(matchFilter),
+      Appointment.countDocuments({ ...matchFilter, status: 'pending' }),
+      Appointment.countDocuments({ ...matchFilter, status: 'approved' }),
+      Appointment.countDocuments({ ...matchFilter, status: 'rejected' }),
+      Appointment.countDocuments({ ...matchFilter, status: 'completed' }),
+      Appointment.find({ date: today }).populate('patient', 'name phone email').sort({ time: 1 }).lean(),
+      Patient.countDocuments({ ...matchFilter, isNewPatient: true }),
+      Patient.countDocuments({ ...matchFilter, isNewPatient: false }),
+      Appointment.aggregate([{ $match: matchFilter }, { $group: { _id: '$language', count: { $sum: 1 } } }]),
+      Visit.countDocuments(matchFilter),
+      PartialBooking.countDocuments(matchFilter),
+      AdClick.countDocuments(matchFilter)
+    ]);
+
+    res.json({
+      totalPatients,
+      totalAppointments,
+      pendingAppointments,
+      approvedAppointments,
+      rejectedAppointments,
+      completedAppointments,
+      recentAppointments: todaysAppointments,
+      newPatients,
+      returningPatients,
+      languageBreakdown,
+      visitsCount,
+      partialsCount,
+      adClicks
+    });
+  } catch (error) {
+    logger.error('Stats error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+app.get('/api/appointments/export', verifyToken, csrfProtection, async (req, res) => {
+  try {
+    const { status, date, format, language } = req.query;
+    const query = {};
+    if (status) query.status = status;
+    if (date) query.date = date;
+
+    const appointments = await Appointment.find(query).populate('patient', 'name phone email').sort({ date: 1, time: 1 }).lean();
+
+    if (format === 'csv') {
+      const csvWriter = createObjectCsvWriter({
+        path: join(tmpdir(), `appointments_${Date.now()}.csv`),
+        header: [
+          { id: 'patientName', title: language === 'ar' ? 'الاسم' : 'Name' },
+          { id: 'patientPhone', title: language === 'ar' ? 'الهاتف' : 'Phone' },
+          { id: 'patientEmail', title: language === 'ar' ? 'الإيميل' : 'Email' },
+          { id: 'date', title: language === 'ar' ? 'التاريخ' : 'Date' },
+          { id: 'time', title: language === 'ar' ? 'الوقت' : 'Time' },
+          { id: 'status', title: language === 'ar' ? 'الحالة' : 'Status' },
+          { id: 'notes', title: language === 'ar' ? 'الملاحظات' : 'Notes' },
+        ],
+      });
+
+      const records = appointments.map(apt => ({
+        patientName: apt.patient.name,
+        patientPhone: apt.patient.phone,
+        patientEmail: apt.patient.email || '-',
+        date: format(new Date(apt.date), 'dd/MM/yyyy', { locale: language === 'ar' ? ar : undefined }),
+        time: apt.time,
+        status: language === 'ar'
+          ? { pending: 'معلق', approved: 'مؤكد', rejected: 'مرفوض', completed: 'مكتمل' }[apt.status]
+          : apt.status.charAt(0).toUpperCase() + apt.status.slice(1),
+        notes: apt.notes || '-',
+      }));
+
+      await csvWriter.writeRecords(records);
+      res.download(join(tmpdir(), `appointments_${Date.now()}.csv`), `appointments_${date || 'all'}.csv`);
+    } else if (format === 'pdf') {
+      const doc = new PDFDocument({
+        lang: language === 'ar' ? 'ar' : 'en',
+        direction: language === 'ar' ? 'rtl' : 'ltr',
+        size: 'A4',
+        margin: 50,
+      });
+      const filePath = join(tmpdir(), `appointments_${Date.now()}.pdf`);
+      const stream = createWriteStream(filePath);
+      doc.pipe(stream);
+
+      doc.font('Helvetica');
+      doc.fontSize(20).text(language === 'ar' ? 'تقرير المواعيد' : 'Appointments Report', { align: 'center' });
+      doc.moveDown(1);
+
+      if (date) {
+        doc.fontSize(12).text(
+          `${language === 'ar' ? 'التاريخ' : 'Date'}: ${format(new Date(date), 'dd/MM/yyyy', { locale: language === 'ar' ? ar : undefined })}`,
+          { align: 'center' }
+        );
+        doc.moveDown(0.5);
+      }
+
+      doc.fontSize(12).fillColor('black');
+      const headers = language === 'ar'
+        ? ['الاسم', 'الهاتف', 'الإيميل', 'التاريخ', 'الوقت', 'الحالة', 'الملاحظات']
+        : ['Name', 'Phone', 'Email', 'Date', 'Time', 'Status', 'Notes'];
+      const headerWidths = [100, 80, 100, 70, 50, 60, 100];
+      let x = 50;
+      headers.forEach((header, i) => {
+        doc.text(header, x, doc.y, { width: headerWidths[i], align: language === 'ar' ? 'right' : 'left' });
+        x += headerWidths[i];
+      });
+      doc.moveDown(0.5);
+
+      doc.fontSize(10);
+      appointments.forEach((apt, index) => {
+        x = 50;
+        const rowData = [
+          apt.patient.name,
+          apt.patient.phone,
+          apt.patient.email || '-',
+          format(new Date(apt.date), 'dd/MM/yyyy', { locale: language === 'ar' ? ar : undefined }),
+          apt.time,
+          language === 'ar'
+            ? { pending: 'معلق', approved: 'مؤكد', rejected: 'مرفوض', completed: 'مكتمل' }[apt.status]
+            : apt.status.charAt(0).toUpperCase() + apt.status.slice(1),
+          apt.notes || '-',
+        ];
+        rowData.forEach((data, i) => {
+          doc.text(data, x, doc.y, { width: headerWidths[i], align: language === 'ar' ? 'right' : 'left' });
+          x += headerWidths[i];
+        });
+        doc.moveDown(0.5);
+        if (index < appointments.length - 1) {
+          doc.moveDown(0.5);
+        }
+      });
+
+      doc.end();
+      stream.on('finish', () => {
+        res.download(filePath, `appointments_${date || 'all'}.pdf`);
+      });
+    } else {
+      res.status(400).json({ message: 'Invalid format' });
+    }
+  } catch (error) {
+    logger.error('Export error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+app.get('/api/patients/incomplete', verifyToken, async (req, res) => {
+  try {
+    const patients = await Patient.find({ appointments: { $size: 0 } }).select('name phone email createdAt').lean();
+    res.json(patients);
+  } catch (error) {
+    logger.error('Incomplete patients error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+app.get('/api/activities', verifyToken, async (req, res) => {
+  try {
+    const activities = await Activity.find()
+      .populate({
+        path: 'appointmentId',
+        populate: { path: 'patient', select: 'name phone email' },
+      })
+      .sort({ createdAt: -1 })
+      .limit(10)
+      .lean();
+    res.json(activities);
+  } catch (error) {
+    logger.error('Activities error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
 app.get('/api/appointments/available/:date', async (req, res) => {
   try {
     const { date } = req.params;
     const parsedDate = parse(date, 'yyyy-MM-dd', new Date());
     if (isBefore(parsedDate, startOfDay(new Date()))) return res.status(400).json({ message: 'Cannot fetch slots for past dates' });
-    if (isFriday(parsedDate) || isSaturday(parsedDate)) return res.status(400).json({ message: 'No appointments on holidays (Friday/Saturday)' });
 
     const bookedAppointments = await Appointment.find({ date }).select('time status').lean();
 
@@ -448,9 +668,11 @@ app.get('/api/appointments/available/:date', async (req, res) => {
 
     const timeSlots = [];
     for (let hour = 9; hour <= 21; hour++) {
-      const time = `${hour.toString().padStart(2, '0')}:00`;
-      const status = bookedMap.get(time) || 'available';
-      timeSlots.push({ time, status, available: status === 'available' });
+      for (let minute of ['00', '30']) {
+        const time = `${hour.toString().padStart(2, '0')}:${minute}`;
+        const status = bookedMap.get(time) || 'available';
+        timeSlots.push({ time, status, available: status === 'available' });
+      }
     }
     res.json(timeSlots);
   } catch (error) {
@@ -797,6 +1019,7 @@ app.get('/api/patients/:phone/appointments', async (req, res) => {
   }
 });
 
+// Error handling middleware
 app.use((err, req, res, next) => {
   if (err.code === 'EBADCSRFTOKEN') {
     logger.warn(`CSRF token validation failed for ${req.method} ${req.url}`);
@@ -806,6 +1029,7 @@ app.use((err, req, res, next) => {
   res.status(500).json({ message: 'Internal server error' });
 });
 
+// Start server with port conflict handling
 server.on('error', (error) => {
   if (error.code === 'EADDRINUSE') {
     logger.error(`Port ${PORT} is already in use. Please free the port or change the PORT environment variable.`);
@@ -820,6 +1044,7 @@ server.listen(PORT, () => {
   logger.info(`Server running on port ${PORT}`);
 });
 
+// Graceful shutdown (continued)
 process.on('SIGTERM', async () => {
   logger.info('SIGTERM received. Closing server...');
   server.close(() => {
@@ -831,11 +1056,13 @@ process.on('SIGTERM', async () => {
   });
 });
 
+// Handle uncaught exceptions
 process.on('uncaughtException', (error) => {
   logger.error('Uncaught Exception:', error);
   process.exit(1);
 });
 
+// Handle unhandled promise rejections
 process.on('unhandledRejection', (reason, promise) => {
   logger.error('Unhandled Rejection at:', promise, 'reason:', reason);
   process.exit(1);
