@@ -192,7 +192,7 @@ const appointmentSchema = new mongoose.Schema({
   notes: { type: String, trim: true },
 }, { timestamps: true });
 
-appointmentSchema.index({ date: 1, time: 1 }); // Removed unique: true to allow multiple pendings
+appointmentSchema.index({ date: 1, time: 1 }); // بدون unique للسماح بmultiple pendings
 appointmentSchema.index({ status: 1 });
 appointmentSchema.index({ createdAt: 1 });
 
@@ -222,7 +222,7 @@ const visitSchema = new mongoose.Schema({
   timestamp: { type: Date, default: Date.now },
   ip: String,
   userAgent: String,
-  referer: String, // Added for better tracking
+  referer: String,
 }, { timestamps: true });
 
 visitSchema.index({ timestamp: -1 });
@@ -255,8 +255,16 @@ const transporter = nodemailer.createTransport({
   maxMessages: 100,
 });
 
+// ترجمات للحالات
+const statusTranslations = {
+  pending: { ar: 'معلق', en: 'Pending' },
+  approved: { ar: 'مؤكد', en: 'Approved' },
+  rejected: { ar: 'مرفوض', en: 'Rejected' },
+  completed: { ar: 'مكتمل', en: 'Completed' },
+};
+
 // دوال مساعدة
-const sendEmailNotification = async (options) => {
+const sendEmailNotification = async (options, language = 'ar') => {
   try {
     await transporter.sendMail(options);
     logger.info(`تم إرسال بريد إلكتروني إلى: ${options.to}`);
@@ -389,8 +397,8 @@ app.post('/api/admin/login', rateLimit({ windowMs: 15 * 60 * 1000, max: 50 }), [
 
     res.cookie('token', token, {
       httpOnly: true,
-      secure: true,
-      sameSite: 'none',
+      secure: true, // تأكد من HTTPS في البرودكشن
+      sameSite: 'none', // للـ cross-site، لكن لو مشكلة، جرب 'lax'
       maxAge: 3600000, // 1 ساعة
       path: '/',
     });
@@ -558,8 +566,8 @@ app.get('/api/appointments/export', verifyToken, async (req, res) => {
         date: format(new Date(apt.date), 'dd/MM/yyyy', { locale: language === 'ar' ? ar : undefined }),
         time: apt.time,
         status: language === 'ar'
-          ? { pending: 'معلق', approved: 'مؤكد', rejected: 'مرفوض', completed: 'مكتمل' }[apt.status]
-          : apt.status.charAt(0).toUpperCase() + apt.status.slice(1),
+          ? statusTranslations[apt.status].ar
+          : statusTranslations[apt.status].en,
         notes: apt.notes || '-',
       }));
 
@@ -610,8 +618,8 @@ app.get('/api/appointments/export', verifyToken, async (req, res) => {
           format(new Date(apt.date), 'dd/MM/yyyy', { locale: language === 'ar' ? ar : undefined }),
           apt.time,
           language === 'ar'
-            ? { pending: 'معلق', approved: 'مؤكد', rejected: 'مرفوض', completed: 'مكتمل' }[apt.status]
-            : apt.status.charAt(0).toUpperCase() + apt.status.slice(1),
+            ? statusTranslations[apt.status].ar
+            : statusTranslations[apt.status].en,
           apt.notes || '-',
         ];
         rowData.forEach((data, i) => {
@@ -775,19 +783,21 @@ app.post('/api/appointments', [
 
     io.emit('newAppointment', populatedAppointment);
 
+    // إيميل جديد بحجز، مترجم
+    const subjectNew = language === 'ar' ? 'حجز موعد جديد' : 'New Appointment Booking';
+    const textNew = language === 'ar' ? `حجز جديد:\nالاسم: ${name}\nالهاتف: ${phone}\nالبريد: ${email || 'غير متوفر'}\nالتاريخ: ${date}\nالوقت: ${time}\nالملاحظات: ${notes || 'لا يوجد'}` : `New booking:\nName: ${name}\nPhone: ${phone}\nEmail: ${email || 'Not provided'}\nDate: ${date}\nTime: ${time}\nNotes: ${notes || 'None'}`;
+    const htmlNew = language === 'ar' ? `<h2>حجز موعد جديد</h2><p><strong>الاسم:</strong> ${name}</p><p><strong>الهاتف:</strong> ${phone}</p><p><strong>البريد:</strong> ${email || 'غير متوفر'}</p><p><strong>التاريخ:</strong> ${date}</p><p><strong>الوقت:</strong> ${time}</p><p><strong>الملاحظات:</strong> ${notes || 'لا يوجد'}</p>` : `<h2>New Appointment Booking</h2><p><strong>Name:</strong> ${name}</p><p><strong>Phone:</strong> ${phone}</p><p><strong>Email:</strong> ${email || 'Not provided'}</p><p><strong>Date:</strong> ${date}</p><p><strong>Time:</strong> ${time}</p><p><strong>Notes:</strong> ${notes || 'None'}</p>`;
+
     sendEmailNotification({
       from: '"Khashaba Clinic" <no-reply@khashaba-clinics.com>',
       to: 'admin@khashaba-clinics.com',
-      subject: language === 'ar' ? 'حجز موعد جديد' : 'New Appointment Booking',
-      text: `حجز جديد:\nالاسم: ${name}\nالهاتف: ${phone}\nالبريد: ${email || 'غير متوفر'}\nالتاريخ: ${date}\nالوقت: ${time}\nالملاحظات: ${notes || 'لا يوجد'}`,
-      html: `<h2>${language === 'ar' ? 'حجز موعد جديد' : 'New Appointment Booking'}</h2><p><strong>الاسم:</strong> ${name}</p><p><strong>الهاتف:</strong> ${phone}</p><p><strong>البريد:</strong> ${email || 'غير متوفر'}</p><p><strong>التاريخ:</strong> ${date}</p><p><strong>الوقت:</strong> ${time}</p><p><strong>الملاحظات:</strong> ${notes || 'لا يوجد'}</p>`,
-    });
+      subject: subjectNew,
+      text: textNew,
+      html: htmlNew,
+    }, language);
 
     res.status(201).json({ message: language === 'ar' ? 'تم إنشاء الموعد بنجاح' : 'Appointment created successfully', appointment: populatedAppointment });
   } catch (error) {
-    if (error.code === 11000) { // Duplicate key error, though unique removed, but for safety
-      return res.status(400).json({ message: req.body.language === 'ar' ? 'الموعد محجوز بالفعل' : 'Time slot already booked' });
-    }
     logger.error('خطأ في إنشاء الموعد:', error);
     res.status(500).json({ message: 'خطأ في الخادم' });
   }
@@ -798,7 +808,7 @@ app.post('/api/visit', async (req, res) => {
     const visit = new Visit({
       ip: req.ip,
       userAgent: req.headers['user-agent'],
-      referer: req.headers.referer || 'https://dr-khashaba.tsd-education.com/', // Hardcoded tracking without .env dependency
+      referer: req.headers.referer || 'https://dr-khashaba.tsd-education.com/',
     });
     await visit.save();
     res.sendStatus(204);
@@ -891,13 +901,19 @@ app.patch('/api/appointments/:id/status', verifyToken, [
     io.emit('appointmentStatusUpdated', { appointmentId: id, status });
 
     if (populatedAppointment.patient.email) {
+      // إيميل تحديث حالة، مترجم
+      const statusTrans = statusTranslations[status][language];
+      const subjectUpdate = language === 'ar' ? 'تحديث حالة الموعد' : 'Appointment Status Update';
+      const textUpdate = language === 'ar' ? `تم تحديث موعدك في ${appointment.date} الساعة ${appointment.time} إلى ${statusTrans}.` : `Your appointment on ${appointment.date} at ${appointment.time} has been updated to ${statusTrans}.`;
+      const htmlUpdate = language === 'ar' ? `<h2>تحديث حالة الموعد</h2><p>تم تحديث موعدك في ${appointment.date} الساعة ${appointment.time} إلى ${statusTrans}.</p><p><strong>الاسم:</strong> ${populatedAppointment.patient.name}</p><p><strong>الهاتف:</strong> ${populatedAppointment.patient.phone}</p>` : `<h2>Appointment Status Update</h2><p>Your appointment on ${appointment.date} at ${appointment.time} has been updated to ${statusTrans}.</p><p><strong>Name:</strong> ${populatedAppointment.patient.name}</p><p><strong>Phone:</strong> ${populatedAppointment.patient.phone}</p>`;
+
       sendEmailNotification({
         from: '"Khashaba Clinic" <no-reply@khashaba-clinics.com>',
         to: populatedAppointment.patient.email,
-        subject: language === 'ar' ? 'تحديث حالة الموعد' : 'Appointment Status Update',
-        text: `تم تحديث موعدك في ${appointment.date} الساعة ${appointment.time} إلى ${status}.`,
-        html: `<h2>${language === 'ar' ? 'تحديث حالة الموعد' : 'Appointment Status Update'}</h2><p>تم تحديث موعدك في ${appointment.date} الساعة ${appointment.time} إلى ${status}.</p><p><strong>الاسم:</strong> ${populatedAppointment.patient.name}</p><p><strong>الهاتف:</strong> ${populatedAppointment.patient.phone}</p>`,
-      });
+        subject: subjectUpdate,
+        text: textUpdate,
+        html: htmlUpdate,
+      }, language);
     }
 
     res.json({ message: language === 'ar' ? 'تم تحديث حالة الموعد' : 'Appointment status updated', appointment: populatedAppointment });
