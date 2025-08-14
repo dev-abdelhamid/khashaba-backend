@@ -7,7 +7,7 @@ import helmet from 'helmet';
 import morgan from 'morgan';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcrypt';
-import { format, parse, isBefore, isAfter, startOfDay, addDays, subDays, subWeeks, subMonths, subYears } from 'date-fns';
+import { format, parse, isBefore, isAfter, startOfDay, addDays, addHours, isFriday, isSaturday, subDays, subWeeks, subMonths, subYears } from 'date-fns';
 import { ar } from 'date-fns/locale';
 import { Server } from 'socket.io';
 import http from 'http';
@@ -192,7 +192,7 @@ const appointmentSchema = new mongoose.Schema({
   notes: { type: String, trim: true },
 }, { timestamps: true });
 
-appointmentSchema.index({ date: 1, time: 1 }, { unique: true });
+appointmentSchema.index({ date: 1, time: 1 }); // Removed unique: true to allow multiple pendings
 appointmentSchema.index({ status: 1 });
 appointmentSchema.index({ createdAt: 1 });
 
@@ -222,6 +222,7 @@ const visitSchema = new mongoose.Schema({
   timestamp: { type: Date, default: Date.now },
   ip: String,
   userAgent: String,
+  referer: String, // Added for better tracking
 }, { timestamps: true });
 
 visitSchema.index({ timestamp: -1 });
@@ -264,15 +265,32 @@ const sendEmailNotification = async (options) => {
   }
 };
 
-const isValidAppointmentTime = (date, time) => {
+const isValidAppointmentTime = (date, time, language = 'ar') => {
   const appointmentDate = parse(date, 'yyyy-MM-dd', new Date());
   const now = startOfDay(new Date());
-  const fourDaysFromNow = addDays(now, 4);
+  const fourteenDaysFromNow = addDays(now, 14);
 
-  if (isBefore(appointmentDate, now) || isAfter(appointmentDate, fourDaysFromNow)) return false;
+  if (isBefore(appointmentDate, now) || isAfter(appointmentDate, fourteenDaysFromNow)) {
+    return { valid: false, message: language === 'ar' ? 'التاريخ خارج النطاق (أسبوعين قادمة فقط)' : 'Date out of range (2 weeks ahead only)' };
+  }
+
+  if (isFriday(appointmentDate) || isSaturday(appointmentDate)) {
+    return { valid: false, message: language === 'ar' ? 'لا يمكن الحجز في أيام الإجازة (الجمعة أو السبت)' : 'Cannot book on holidays (Friday or Saturday)' };
+  }
+
+  const appointmentDateTime = parse(`${date} ${time}`, 'yyyy-MM-dd HH:mm', new Date());
+  const minTime = addHours(new Date(), 4);
+
+  if (isBefore(appointmentDateTime, minTime)) {
+    return { valid: false, message: language === 'ar' ? 'لا يمكن الحجز قبل 4 ساعات من الآن' : 'Cannot book before 4 hours from now' };
+  }
 
   const hour = parseInt(time.split(':')[0], 10);
-  return hour >= 9 && hour <= 21;
+  if (hour < 9 || hour > 21) {
+    return { valid: false, message: language === 'ar' ? 'ساعات العمل من 9 صباحًا إلى 9 مساءً' : 'Working hours from 9 AM to 9 PM' };
+  }
+
+  return { valid: true };
 };
 
 const handleValidationErrors = (req, res, next) => {
@@ -650,18 +668,29 @@ app.get('/api/appointments/available/:date', async (req, res) => {
   try {
     const { date } = req.params;
     const parsedDate = parse(date, 'yyyy-MM-dd', new Date());
-    if (isBefore(parsedDate, startOfDay(new Date()))) return res.status(400).json({ message: 'لا يمكن جلب الفترات الزمنية للتواريخ الماضية' });
 
-    const bookedAppointments = await Appointment.find({ date }).select('time status').lean();
+    if (isBefore(parsedDate, startOfDay(new Date())) || isFriday(parsedDate) || isSaturday(parsedDate)) {
+      return res.status(400).json({ message: 'لا يمكن جلب الفترات الزمنية للتواريخ الماضية أو أيام الإجازة' });
+    }
 
-    const bookedMap = new Map(bookedAppointments.map(apt => [apt.time, apt.status === 'approved' ? 'confirmed' : apt.status]));
+    const approvedAppointments = await Appointment.find({
+      date,
+      status: { $in: ['approved', 'completed'] }
+    }).select('time').lean();
+
+    const bookedSet = new Set(approvedAppointments.map(apt => apt.time));
 
     const timeSlots = [];
     for (let hour = 9; hour <= 21; hour++) {
       for (let minute of ['00', '30']) {
         const time = `${hour.toString().padStart(2, '0')}:${minute}`;
-        const status = bookedMap.get(time) || 'available';
-        timeSlots.push({ time, status, available: status === 'available' });
+        const slotDateTime = parse(`${date} ${time}`, 'yyyy-MM-dd HH:mm', new Date());
+        const minTime = addHours(new Date(), 4);
+        const isPast = isBefore(slotDateTime, minTime);
+        const isBooked = bookedSet.has(time);
+        const status = isBooked ? 'confirmed' : 'available';
+        const available = !isBooked && !isPast;
+        timeSlots.push({ time, status, available });
       }
     }
     res.json(timeSlots);
@@ -703,18 +732,19 @@ app.post('/api/appointments', [
   body('phone').trim().matches(/^\+?\d{10,15}$/).withMessage('رقم الهاتف غير صالح'),
   body('email').optional().isEmail().normalizeEmail().withMessage('البريد الإلكتروني غير صالح'),
   body('date').trim().notEmpty().isISO8601().withMessage('صيغة التاريخ غير صالحة'),
-  body('time').trim().notEmpty().matches(/^\d{2}:00$/).withMessage('صيغة الوقت غير صالحة'),
+  body('time').trim().notEmpty().matches(/^\d{2}:\d{2}$/).withMessage('صيغة الوقت غير صالحة'),
   body('language').optional().isIn(['ar', 'en']).withMessage('اللغة غير صالحة'),
   handleValidationErrors,
 ], async (req, res) => {
   try {
     const { name, phone, email, date, time, notes, language = 'ar' } = req.body;
 
-    if (!isValidAppointmentTime(date, time)) return res.status(400).json({ message: language === 'ar' ? 'الموعد أو التاريخ غير صالح' : 'Invalid appointment time or date' });
+    const validation = isValidAppointmentTime(date, time, language);
+    if (!validation.valid) return res.status(400).json({ message: validation.message });
 
-    const existingAppointment = await Appointment.findOne({ date, time, status: 'approved' }).lean();
-    if (existingAppointment) {
-      return res.status(400).json({ message: language === 'ar' ? 'الموعد محجوز بالفعل' : 'Time slot already booked' });
+    const existingApproved = await Appointment.findOne({ date, time, status: 'approved' }).lean();
+    if (existingApproved) {
+      return res.status(400).json({ message: language === 'ar' ? 'الموعد محجوز بالفعل (مؤكد)' : 'Time slot already confirmed' });
     }
 
     let patient = await Patient.findOne({ phone }).lean();
@@ -753,8 +783,11 @@ app.post('/api/appointments', [
       html: `<h2>${language === 'ar' ? 'حجز موعد جديد' : 'New Appointment Booking'}</h2><p><strong>الاسم:</strong> ${name}</p><p><strong>الهاتف:</strong> ${phone}</p><p><strong>البريد:</strong> ${email || 'غير متوفر'}</p><p><strong>التاريخ:</strong> ${date}</p><p><strong>الوقت:</strong> ${time}</p><p><strong>الملاحظات:</strong> ${notes || 'لا يوجد'}</p>`,
     });
 
-    res.status(201).json({ message: 'تم إنشاء الموعد بنجاح', appointment: populatedAppointment });
+    res.status(201).json({ message: language === 'ar' ? 'تم إنشاء الموعد بنجاح' : 'Appointment created successfully', appointment: populatedAppointment });
   } catch (error) {
+    if (error.code === 11000) { // Duplicate key error, though unique removed, but for safety
+      return res.status(400).json({ message: req.body.language === 'ar' ? 'الموعد محجوز بالفعل' : 'Time slot already booked' });
+    }
     logger.error('خطأ في إنشاء الموعد:', error);
     res.status(500).json({ message: 'خطأ في الخادم' });
   }
@@ -765,6 +798,7 @@ app.post('/api/visit', async (req, res) => {
     const visit = new Visit({
       ip: req.ip,
       userAgent: req.headers['user-agent'],
+      referer: req.headers.referer || 'https://dr-khashaba.tsd-education.com/', // Hardcoded tracking without .env dependency
     });
     await visit.save();
     res.sendStatus(204);
@@ -841,8 +875,8 @@ app.patch('/api/appointments/:id/status', verifyToken, [
     if (!appointment) return res.status(404).json({ message: language === 'ar' ? 'الموعد غير موجود' : 'Appointment not found' });
 
     if (status === 'approved') {
-      const existingApproved = await Appointment.findOne({ date: appointment.date, time: appointment.time, status: 'approved' }).lean();
-      if (existingApproved && existingApproved._id.toString() !== id) return res.status(400).json({ message: language === 'ar' ? 'الموعد محجوز مسبقًا' : 'Slot already approved for another appointment' });
+      const existingApproved = await Appointment.findOne({ date: appointment.date, time: appointment.time, status: 'approved', _id: { $ne: id } }).lean();
+      if (existingApproved) return res.status(400).json({ message: language === 'ar' ? 'الموعد محجوز مسبقًا بموعد مؤكد آخر' : 'Slot already approved for another appointment' });
     }
 
     appointment.status = status;
