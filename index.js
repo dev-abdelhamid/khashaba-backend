@@ -21,11 +21,12 @@ import { createWriteStream } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import PDFDocument from 'pdfkit';
+import { BetaAnalyticsDataClient } from '@google-analytics/data';
 
 dotenv.config();
 
 // التحقق من متغيرات البيئة
-const requiredEnvVars = ['PORT', 'MONGODB_URI', 'CORS_ORIGIN', 'JWT_SECRET', 'EMAIL_USER', 'EMAIL_PASS', 'JWT_REFRESH_SECRET'];
+const requiredEnvVars = ['PORT', 'MONGODB_URI', 'CORS_ORIGIN', 'JWT_SECRET', 'EMAIL_USER', 'EMAIL_PASS', 'JWT_REFRESH_SECRET', 'GA_PROPERTY_ID', 'GA_CREDENTIALS_PATH'];
 requiredEnvVars.forEach((varName) => {
   if (!process.env[varName]) {
     throw new Error(`المتغير المطلوب مفقود: ${varName}`);
@@ -60,6 +61,9 @@ const PORT = process.env.PORT || 5000;
 const MONGO_URI = process.env.MONGODB_URI;
 const JWT_SECRET = process.env.JWT_SECRET;
 const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET;
+const analyticsDataClient = new BetaAnalyticsDataClient({
+  keyFilename: process.env.GA_CREDENTIALS_PATH,
+});
 
 // إعداد السجل (Logger)
 const logger = winston.createLogger({
@@ -397,16 +401,16 @@ app.post('/api/admin/login', rateLimit({ windowMs: 15 * 60 * 1000, max: 50 }), [
 
     res.cookie('token', token, {
       httpOnly: true,
-      secure: true, // تأكد من HTTPS في البرودكشن
-      sameSite: 'none', // للـ cross-site، لكن لو مشكلة، جرب 'lax'
-      maxAge: 3600000, // 1 ساعة
+      secure: true,
+      sameSite: 'none',
+      maxAge: 3600000,
       path: '/',
     });
     res.cookie('refreshToken', refreshToken, {
       httpOnly: true,
       secure: true,
       sameSite: 'none',
-      maxAge: 7 * 24 * 3600000, // 7 أيام
+      maxAge: 7 * 24 * 3600000,
       path: '/',
     });
 
@@ -424,7 +428,7 @@ app.post('/api/admin/refresh-token', verifyRefreshToken, async (req, res) => {
       httpOnly: true,
       secure: true,
       sameSite: 'none',
-      maxAge: 3600000, // 1 ساعة
+      maxAge: 3600000,
       path: '/',
     });
     res.json({ message: 'تم تجديد التوكن' });
@@ -466,21 +470,22 @@ app.get('/api/dashboard/stats', verifyToken, async (req, res) => {
     const now = new Date();
     let startDate;
     switch (period) {
-      case 'day':
-        startDate = subDays(now, 1);
-        break;
-      case 'week':
-        startDate = subWeeks(now, 1);
-        break;
-      case 'month':
-        startDate = subMonths(now, 1);
-        break;
-      case 'year':
-        startDate = subYears(now, 1);
-        break;
-      default:
-        startDate = subDays(now, 1);
+      case 'day': startDate = subDays(now, 1); break;
+      case 'week': startDate = subWeeks(now, 1); break;
+      case 'month': startDate = subMonths(now, 1); break;
+      case 'year': startDate = subYears(now, 1); break;
+      default: startDate = subDays(now, 1);
     }
+
+    const [response] = await analyticsDataClient.runReport({
+      property: `properties/${process.env.GA_PROPERTY_ID}`,
+      dateRanges: [{ startDate: format(startDate, 'yyyy-MM-dd'), endDate: format(now, 'yyyy-MM-dd') }],
+      metrics: [{ name: 'activeUsers' }],
+    });
+
+    const visitsCount = response.rows && response.rows[0] && response.rows[0].metricValues && response.rows[0].metricValues[0]
+      ? parseInt(response.rows[0].metricValues[0].value, 10)
+      : 0;
 
     const matchFilter = { createdAt: { $gte: startDate } };
     const today = format(new Date(), 'yyyy-MM-dd');
@@ -496,7 +501,6 @@ app.get('/api/dashboard/stats', verifyToken, async (req, res) => {
       newPatients,
       returningPatients,
       languageBreakdown,
-      visitsCount,
       partialsCount,
       adClicks,
     ] = await Promise.all([
@@ -510,7 +514,6 @@ app.get('/api/dashboard/stats', verifyToken, async (req, res) => {
       Patient.countDocuments({ ...matchFilter, isNewPatient: true }),
       Patient.countDocuments({ ...matchFilter, isNewPatient: false }),
       Appointment.aggregate([{ $match: matchFilter }, { $group: { _id: '$language', count: { $sum: 1 } } }]),
-      Visit.countDocuments(matchFilter),
       PartialBooking.countDocuments(matchFilter),
       AdClick.countDocuments(matchFilter),
     ]);
@@ -783,7 +786,6 @@ app.post('/api/appointments', [
 
     io.emit('newAppointment', populatedAppointment);
 
-    // إيميل جديد بحجز، مترجم
     const subjectNew = language === 'ar' ? 'حجز موعد جديد' : 'New Appointment Booking';
     const textNew = language === 'ar' ? `حجز جديد:\nالاسم: ${name}\nالهاتف: ${phone}\nالبريد: ${email || 'غير متوفر'}\nالتاريخ: ${date}\nالوقت: ${time}\nالملاحظات: ${notes || 'لا يوجد'}` : `New booking:\nName: ${name}\nPhone: ${phone}\nEmail: ${email || 'Not provided'}\nDate: ${date}\nTime: ${time}\nNotes: ${notes || 'None'}`;
     const htmlNew = language === 'ar' ? `<h2>حجز موعد جديد</h2><p><strong>الاسم:</strong> ${name}</p><p><strong>الهاتف:</strong> ${phone}</p><p><strong>البريد:</strong> ${email || 'غير متوفر'}</p><p><strong>التاريخ:</strong> ${date}</p><p><strong>الوقت:</strong> ${time}</p><p><strong>الملاحظات:</strong> ${notes || 'لا يوجد'}</p>` : `<h2>New Appointment Booking</h2><p><strong>Name:</strong> ${name}</p><p><strong>Phone:</strong> ${phone}</p><p><strong>Email:</strong> ${email || 'Not provided'}</p><p><strong>Date:</strong> ${date}</p><p><strong>Time:</strong> ${time}</p><p><strong>Notes:</strong> ${notes || 'None'}</p>`;
@@ -901,7 +903,6 @@ app.patch('/api/appointments/:id/status', verifyToken, [
     io.emit('appointmentStatusUpdated', { appointmentId: id, status });
 
     if (populatedAppointment.patient.email) {
-      // إيميل تحديث حالة، مترجم
       const statusTrans = statusTranslations[status][language];
       const subjectUpdate = language === 'ar' ? 'تحديث حالة الموعد' : 'Appointment Status Update';
       const textUpdate = language === 'ar' ? `تم تحديث موعدك في ${appointment.date} الساعة ${appointment.time} إلى ${statusTrans}.` : `Your appointment on ${appointment.date} at ${appointment.time} has been updated to ${statusTrans}.`;
