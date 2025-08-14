@@ -21,19 +21,14 @@ import { createWriteStream } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import PDFDocument from 'pdfkit';
-import { BetaAnalyticsDataClient } from '@google-analytics/data';
 
 dotenv.config();
 
-const requiredEnvVars = ['PORT', 'MONGODB_URI', 'CORS_ORIGIN', 'JWT_SECRET', 'EMAIL_USER', 'EMAIL_PASS', 'JWT_REFRESH_SECRET', 'GA_PROPERTY_ID', 'GA_CREDENTIALS_PATH'];
+const requiredEnvVars = ['PORT', 'MONGODB_URI', 'CORS_ORIGIN', 'JWT_SECRET', 'EMAIL_USER', 'EMAIL_PASS', 'JWT_REFRESH_SECRET'];
 requiredEnvVars.forEach((varName) => {
   if (!process.env[varName]) {
     throw new Error(`المتغير المطلوب مفقود: ${varName}`);
   }
-});
-
-const analyticsDataClient = new BetaAnalyticsDataClient({
-  keyFilename: process.env.GA_CREDENTIALS_PATH,
 });
 
 const app = express();
@@ -64,7 +59,6 @@ const PORT = process.env.PORT || 5000;
 const MONGO_URI = process.env.MONGODB_URI;
 const JWT_SECRET = process.env.JWT_SECRET;
 const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET;
-const GA_PROPERTY_ID = process.env.GA_PROPERTY_ID;
 
 const logger = winston.createLogger({
   level: 'info',
@@ -218,6 +212,15 @@ const partialBookingSchema = new mongoose.Schema({
 
 partialBookingSchema.index({ createdAt: -1 });
 
+const visitSchema = new mongoose.Schema({
+  timestamp: { type: Date, default: Date.now },
+  ip: String,
+  userAgent: String,
+  referer: String,
+}, { timestamps: true });
+
+visitSchema.index({ timestamp: -1 });
+
 const adClickSchema = new mongoose.Schema({
   timestamp: { type: Date, default: Date.now },
   campaign: { type: String, trim: true },
@@ -231,6 +234,7 @@ const Admin = mongoose.model('Admin', adminSchema);
 const Appointment = mongoose.model('Appointment', appointmentSchema);
 const Activity = mongoose.model('Activity', activitySchema);
 const PartialBooking = mongoose.model('PartialBooking', partialBookingSchema);
+const Visit = mongoose.model('Visit', visitSchema);
 const AdClick = mongoose.model('AdClick', adClickSchema);
 
 const transporter = nodemailer.createTransport({
@@ -477,20 +481,6 @@ app.get('/api/dashboard/stats', verifyToken, async (req, res) => {
     const matchFilter = { createdAt: { $gte: startDate } };
     const today = format(new Date(), 'yyyy-MM-dd');
 
-    // جلب بيانات الزيارات من Google Analytics
-    const { rows } = await analyticsDataClient.runReport({
-      property: `properties/${GA_PROPERTY_ID}`,
-      dateRanges: [{
-        startDate: format(startDate, 'yyyy-MM-dd'),
-        endDate: format(now, 'yyyy-MM-dd'),
-      }],
-      metrics: [{ name: 'activeUsers' }],
-    });
-
-    const visitsCount = rows && rows[0] && rows[0].metricValues && rows[0].metricValues[0]
-      ? parseInt(rows[0].metricValues[0].value, 10)
-      : 0;
-
     const [
       totalPatients,
       totalAppointments,
@@ -502,6 +492,7 @@ app.get('/api/dashboard/stats', verifyToken, async (req, res) => {
       newPatients,
       returningPatients,
       languageBreakdown,
+      visitsCount,
       partialsCount,
       adClicks,
     ] = await Promise.all([
@@ -515,6 +506,7 @@ app.get('/api/dashboard/stats', verifyToken, async (req, res) => {
       Patient.countDocuments({ ...matchFilter, isNewPatient: true }),
       Patient.countDocuments({ ...matchFilter, isNewPatient: false }),
       Appointment.aggregate([{ $match: matchFilter }, { $group: { _id: '$language', count: { $sum: 1 } } }]),
+      Visit.countDocuments(matchFilter),
       PartialBooking.countDocuments(matchFilter),
       AdClick.countDocuments(matchFilter),
     ]);
@@ -692,7 +684,6 @@ app.get('/api/appointments/available/:date', async (req, res) => {
       return res.status(400).json({ message: 'لا يمكن جلب الفترات الزمنية للتواريخ الماضية أو أيام الإجازة' });
     }
 
-    // التحقق فقط من المواعيد بحالة 'approved' لتحديد الفترات المحجوزة
     const approvedAppointments = await Appointment.find({
       date,
       status: 'approved',
@@ -762,7 +753,6 @@ app.post('/api/appointments', [
     const validation = isValidAppointmentTime(date, time, language);
     if (!validation.valid) return res.status(400).json({ message: validation.message });
 
-    // التحقق من أن الفتحة الزمنية ليست محجوزة بحالة 'approved'
     const existingApproved = await Appointment.findOne({ date, time, status: 'approved' }).lean();
     if (existingApproved) {
       return res.status(400).json({ message: language === 'ar' ? 'الموعد محجوز بالفعل (مؤكد)' : 'Time slot already confirmed' });
@@ -825,11 +815,15 @@ app.post('/api/appointments', [
 
 app.post('/api/visit', async (req, res) => {
   try {
-    // للحفاظ على التوافق مع الواجهة الأمامية، يتم إرجاع استجابة فارغة
-    // بيانات الزيارات تُجلب من Google Analytics في /api/dashboard/stats
+    const visit = new Visit({
+      ip: req.ip,
+      userAgent: req.headers['user-agent'],
+      referer: req.headers.referer || 'https://dr-khashaba.tsd-education.com/',
+    });
+    await visit.save();
     res.sendStatus(204);
   } catch (error) {
-    logger.error('خطأ في معالجة طلب الزيارة:', error);
+    logger.error('خطأ في تسجيل الزيارة:', error);
     res.sendStatus(500);
   }
 });
