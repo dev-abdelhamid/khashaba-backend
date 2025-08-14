@@ -24,7 +24,6 @@ import PDFDocument from 'pdfkit';
 
 dotenv.config();
 
-// التحقق من متغيرات البيئة
 const requiredEnvVars = ['PORT', 'MONGODB_URI', 'CORS_ORIGIN', 'JWT_SECRET', 'EMAIL_USER', 'EMAIL_PASS', 'JWT_REFRESH_SECRET'];
 requiredEnvVars.forEach((varName) => {
   if (!process.env[varName]) {
@@ -61,7 +60,6 @@ const MONGO_URI = process.env.MONGODB_URI;
 const JWT_SECRET = process.env.JWT_SECRET;
 const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET;
 
-// إعداد السجل (Logger)
 const logger = winston.createLogger({
   level: 'info',
   format: winston.format.combine(
@@ -76,7 +74,6 @@ const logger = winston.createLogger({
   ],
 });
 
-// Middleware
 app.use(compression());
 app.use(helmet({
   contentSecurityPolicy: {
@@ -134,7 +131,7 @@ app.use((req, res, next) => {
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 دقيقة
+  windowMs: 15 * 60 * 1000,
   max: 1000,
   message: { message: 'عدد كبير جدًا من الطلبات، حاول مجددًا لاحقًا' },
 }));
@@ -144,15 +141,13 @@ app.use((req, res, next) => {
 });
 app.options('*', cors());
 
-// Rate Limiting للحجوزات الجزئية
 const partialRateLimiter = rateLimit({
-  windowMs: 60 * 1000, // دقيقة واحدة
+  windowMs: 60 * 1000,
   max: 5,
   message: { message: 'عدد كبير جدًا من محاولات حفظ البيانات الجزئية، حاول مجددًا لاحقًا' },
 });
 app.use('/api/partial-bookings', partialRateLimiter);
 
-// الاتصال بقاعدة البيانات MongoDB
 mongoose.set('strictQuery', true);
 mongoose.connect(MONGO_URI, {
   maxPoolSize: 10,
@@ -163,7 +158,6 @@ mongoose.connect(MONGO_URI, {
     process.exit(1);
   });
 
-// تعريف النماذج (Schemas)
 const patientSchema = new mongoose.Schema({
   name: { type: String, required: true, trim: true },
   phone: { type: String, required: true, unique: true, trim: true },
@@ -192,7 +186,7 @@ const appointmentSchema = new mongoose.Schema({
   notes: { type: String, trim: true },
 }, { timestamps: true });
 
-appointmentSchema.index({ date: 1, time: 1 }); // بدون unique للسماح بmultiple pendings
+appointmentSchema.index({ date: 1, time: 1 });
 appointmentSchema.index({ status: 1 });
 appointmentSchema.index({ createdAt: 1 });
 
@@ -243,7 +237,6 @@ const PartialBooking = mongoose.model('PartialBooking', partialBookingSchema);
 const Visit = mongoose.model('Visit', visitSchema);
 const AdClick = mongoose.model('AdClick', adClickSchema);
 
-// إعداد البريد الإلكتروني
 const transporter = nodemailer.createTransport({
   service: 'gmail',
   auth: {
@@ -255,7 +248,6 @@ const transporter = nodemailer.createTransport({
   maxMessages: 100,
 });
 
-// ترجمات للحالات
 const statusTranslations = {
   pending: { ar: 'معلق', en: 'Pending' },
   approved: { ar: 'مؤكد', en: 'Approved' },
@@ -263,7 +255,13 @@ const statusTranslations = {
   completed: { ar: 'مكتمل', en: 'Completed' },
 };
 
-// دوال مساعدة
+const formatTime12Hour = (time, language = 'ar') => {
+  const [hour, minute] = time.split(':').map(Number);
+  const period = hour >= 12 ? (language === 'ar' ? 'مساءً' : 'PM') : (language === 'ar' ? 'صباحًا' : 'AM');
+  const formattedHour = hour % 12 || 12;
+  return `${formattedHour}:${minute.toString().padStart(2, '0')} ${period}`;
+};
+
 const sendEmailNotification = async (options, language = 'ar') => {
   try {
     await transporter.sendMail(options);
@@ -352,13 +350,11 @@ const verifyRefreshToken = async (req, res, next) => {
   }
 };
 
-// أحداث WebSocket
 io.on('connection', (socket) => {
   logger.info(`تم اتصال العميل: ${socket.id}`);
   socket.on('disconnect', () => logger.info(`تم قطع اتصال العميل: ${socket.id}`));
 });
 
-// المسارات (Routes)
 app.post('/api/admin/register', [
   body('username').trim().notEmpty().isLength({ min: 3 }).withMessage('اسم المستخدم يجب أن يكون 3 أحرف على الأقل'),
   body('password').trim().isLength({ min: 8 }).withMessage('كلمة المرور يجب أن تكون 8 أحرف على الأقل'),
@@ -397,16 +393,16 @@ app.post('/api/admin/login', rateLimit({ windowMs: 15 * 60 * 1000, max: 50 }), [
 
     res.cookie('token', token, {
       httpOnly: true,
-      secure: true, // تأكد من HTTPS في البرودكشن
-      sameSite: 'none', // للـ cross-site، لكن لو مشكلة، جرب 'lax'
-      maxAge: 3600000, // 1 ساعة
+      secure: true,
+      sameSite: 'none',
+      maxAge: 3600000,
       path: '/',
     });
     res.cookie('refreshToken', refreshToken, {
       httpOnly: true,
       secure: true,
       sameSite: 'none',
-      maxAge: 7 * 24 * 3600000, // 7 أيام
+      maxAge: 7 * 24 * 3600000,
       path: '/',
     });
 
@@ -424,7 +420,7 @@ app.post('/api/admin/refresh-token', verifyRefreshToken, async (req, res) => {
       httpOnly: true,
       secure: true,
       sameSite: 'none',
-      maxAge: 3600000, // 1 ساعة
+      maxAge: 3600000,
       path: '/',
     });
     res.json({ message: 'تم تجديد التوكن' });
@@ -522,7 +518,10 @@ app.get('/api/dashboard/stats', verifyToken, async (req, res) => {
       approvedAppointments,
       rejectedAppointments,
       completedAppointments,
-      recentAppointments: todaysAppointments,
+      recentAppointments: todaysAppointments.map(apt => ({
+        ...apt,
+        time: formatTime12Hour(apt.time, apt.language),
+      })),
       newPatients,
       returningPatients,
       languageBreakdown,
@@ -564,10 +563,8 @@ app.get('/api/appointments/export', verifyToken, async (req, res) => {
         patientPhone: apt.patient.phone,
         patientEmail: apt.patient.email || '-',
         date: format(new Date(apt.date), 'dd/MM/yyyy', { locale: language === 'ar' ? ar : undefined }),
-        time: apt.time,
-        status: language === 'ar'
-          ? statusTranslations[apt.status].ar
-          : statusTranslations[apt.status].en,
+        time: formatTime12Hour(apt.time, language),
+        status: language === 'ar' ? statusTranslations[apt.status].ar : statusTranslations[apt.status].en,
         notes: apt.notes || '-',
       }));
 
@@ -616,10 +613,8 @@ app.get('/api/appointments/export', verifyToken, async (req, res) => {
           apt.patient.phone,
           apt.patient.email || '-',
           format(new Date(apt.date), 'dd/MM/yyyy', { locale: language === 'ar' ? ar : undefined }),
-          apt.time,
-          language === 'ar'
-            ? statusTranslations[apt.status].ar
-            : statusTranslations[apt.status].en,
+          formatTime12Hour(apt.time, language),
+          language === 'ar' ? statusTranslations[apt.status].ar : statusTranslations[apt.status].en,
           apt.notes || '-',
         ];
         rowData.forEach((data, i) => {
@@ -665,7 +660,15 @@ app.get('/api/activities', verifyToken, async (req, res) => {
       .sort({ createdAt: -1 })
       .limit(10)
       .lean();
-    res.json(activities);
+    const formattedActivities = activities.map(activity => ({
+      ...activity,
+      details: activity.appointmentId
+        ? (activity.appointmentId.language === 'ar'
+            ? `تم ${activity.action === 'new_appointment' ? 'إنشاء' : activity.action === 'status_updated' ? 'تحديث حالة' : 'حذف'} موعد لـ ${activity.appointmentId.patient.name} في ${activity.appointmentId.date} الساعة ${formatTime12Hour(activity.appointmentId.time, 'ar')}`
+            : `Appointment ${activity.action === 'new_appointment' ? 'created' : activity.action === 'status_updated' ? 'status updated' : 'deleted'} for ${activity.appointmentId.patient.name} on ${activity.appointmentId.date} at ${formatTime12Hour(activity.appointmentId.time, 'en')}`)
+        : activity.details,
+    }));
+    res.json(formattedActivities);
   } catch (error) {
     logger.error('خطأ في جلب الأنشطة:', error);
     res.status(500).json({ message: 'خطأ في الخادم' });
@@ -683,7 +686,7 @@ app.get('/api/appointments/available/:date', async (req, res) => {
 
     const approvedAppointments = await Appointment.find({
       date,
-      status: { $in: ['approved', 'completed'] }
+      status: 'approved',
     }).select('time').lean();
 
     const bookedSet = new Set(approvedAppointments.map(apt => apt.time));
@@ -698,7 +701,7 @@ app.get('/api/appointments/available/:date', async (req, res) => {
         const isBooked = bookedSet.has(time);
         const status = isBooked ? 'confirmed' : 'available';
         const available = !isBooked && !isPast;
-        timeSlots.push({ time, status, available });
+        timeSlots.push({ time, status, available, formattedTime: formatTime12Hour(time, req.query.language || 'ar') });
       }
     }
     res.json(timeSlots);
@@ -781,12 +784,19 @@ app.post('/api/appointments', [
 
     const populatedAppointment = await Appointment.findById(appointment._id).populate('patient', 'name phone email').lean();
 
-    io.emit('newAppointment', populatedAppointment);
+    const activity = new Activity({
+      appointmentId: appointment._id,
+      action: 'new_appointment',
+      details: language === 'ar' ? `تم إنشاء موعد جديد لـ ${name} في ${date} الساعة ${formatTime12Hour(time, language)}` : `New appointment created for ${name} on ${date} at ${formatTime12Hour(time, language)}`,
+    });
+    await activity.save();
 
-    // إيميل جديد بحجز، مترجم
+    io.emit('newAppointment', { ...populatedAppointment, time: formatTime12Hour(populatedAppointment.time, language) });
+    io.emit('newActivity', activity);
+
     const subjectNew = language === 'ar' ? 'حجز موعد جديد' : 'New Appointment Booking';
-    const textNew = language === 'ar' ? `حجز جديد:\nالاسم: ${name}\nالهاتف: ${phone}\nالبريد: ${email || 'غير متوفر'}\nالتاريخ: ${date}\nالوقت: ${time}\nالملاحظات: ${notes || 'لا يوجد'}` : `New booking:\nName: ${name}\nPhone: ${phone}\nEmail: ${email || 'Not provided'}\nDate: ${date}\nTime: ${time}\nNotes: ${notes || 'None'}`;
-    const htmlNew = language === 'ar' ? `<h2>حجز موعد جديد</h2><p><strong>الاسم:</strong> ${name}</p><p><strong>الهاتف:</strong> ${phone}</p><p><strong>البريد:</strong> ${email || 'غير متوفر'}</p><p><strong>التاريخ:</strong> ${date}</p><p><strong>الوقت:</strong> ${time}</p><p><strong>الملاحظات:</strong> ${notes || 'لا يوجد'}</p>` : `<h2>New Appointment Booking</h2><p><strong>Name:</strong> ${name}</p><p><strong>Phone:</strong> ${phone}</p><p><strong>Email:</strong> ${email || 'Not provided'}</p><p><strong>Date:</strong> ${date}</p><p><strong>Time:</strong> ${time}</p><p><strong>Notes:</strong> ${notes || 'None'}</p>`;
+    const textNew = language === 'ar' ? `حجز جديد:\nالاسم: ${name}\nالهاتف: ${phone}\nالبريد: ${email || 'غير متوفر'}\nالتاريخ: ${date}\nالوقت: ${formatTime12Hour(time, language)}\nالملاحظات: ${notes || 'لا يوجد'}` : `New booking:\nName: ${name}\nPhone: ${phone}\nEmail: ${email || 'Not provided'}\nDate: ${date}\nTime: ${formatTime12Hour(time, language)}\nNotes: ${notes || 'None'}`;
+    const htmlNew = language === 'ar' ? `<h2>حجز موعد جديد</h2><p><strong>الاسم:</strong> ${name}</p><p><strong>الهاتف:</strong> ${phone}</p><p><strong>البريد:</strong> ${email || 'غير متوفر'}</p><p><strong>التاريخ:</strong> ${date}</p><p><strong>الوقت:</strong> ${formatTime12Hour(time, language)}</p><p><strong>الملاحظات:</strong> ${notes || 'لا يوجد'}</p>` : `<h2>New Appointment Booking</h2><p><strong>Name:</strong> ${name}</p><p><strong>Phone:</strong> ${phone}</p><p><strong>Email:</strong> ${email || 'Not provided'}</p><p><strong>Date:</strong> ${date}</p><p><strong>Time:</strong> ${formatTime12Hour(time, language)}</p><p><strong>Notes:</strong> ${notes || 'None'}</p>`;
 
     sendEmailNotification({
       from: '"Khashaba Clinic" <no-reply@khashaba-clinics.com>',
@@ -796,7 +806,7 @@ app.post('/api/appointments', [
       html: htmlNew,
     }, language);
 
-    res.status(201).json({ message: language === 'ar' ? 'تم إنشاء الموعد بنجاح' : 'Appointment created successfully', appointment: populatedAppointment });
+    res.status(201).json({ message: language === 'ar' ? 'تم إنشاء الموعد بنجاح' : 'Appointment created successfully', appointment: { ...populatedAppointment, time: formatTime12Hour(populatedAppointment.time, language) } });
   } catch (error) {
     logger.error('خطأ في إنشاء الموعد:', error);
     res.status(500).json({ message: 'خطأ في الخادم' });
@@ -859,13 +869,13 @@ app.get('/api/partial-bookings', verifyToken, async (req, res) => {
 
 app.get('/api/appointments', verifyToken, async (req, res) => {
   try {
-    const { status, date } = req.query;
+    const { status, date, language = 'ar' } = req.query;
     const query = {};
     if (status) query.status = status;
     if (date) query.date = date;
 
     const appointments = await Appointment.find(query).populate('patient', 'name phone email').sort({ date: 1, time: 1 }).lean();
-    res.json(appointments);
+    res.json(appointments.map(apt => ({ ...apt, time: formatTime12Hour(apt.time, language) })));
   } catch (error) {
     logger.error('خطأ في جلب المواعيد:', error);
     res.status(500).json({ message: 'خطأ في الخادم' });
@@ -893,19 +903,24 @@ app.patch('/api/appointments/:id/status', verifyToken, [
     appointment.updatedAt = new Date();
     await appointment.save();
 
-    const activity = new Activity({ appointmentId: id, action: 'status_updated', details: `تم تغيير الحالة إلى ${status}`, adminId: req.adminId });
-    await activity.save();
-
     const populatedAppointment = await Appointment.findById(id).populate('patient', 'name phone email').lean();
 
+    const activity = new Activity({
+      appointmentId: id,
+      action: 'status_updated',
+      details: language === 'ar' ? `تم تحديث حالة الموعد إلى ${statusTranslations[status].ar} لـ ${populatedAppointment.patient.name} في ${appointment.date} الساعة ${formatTime12Hour(appointment.time, language)}` : `Appointment status updated to ${statusTranslations[status].en} for ${populatedAppointment.patient.name} on ${appointment.date} at ${formatTime12Hour(appointment.time, language)}`,
+      adminId: req.adminId,
+    });
+    await activity.save();
+
     io.emit('appointmentStatusUpdated', { appointmentId: id, status });
+    io.emit('newActivity', activity);
 
     if (populatedAppointment.patient.email) {
-      // إيميل تحديث حالة، مترجم
       const statusTrans = statusTranslations[status][language];
       const subjectUpdate = language === 'ar' ? 'تحديث حالة الموعد' : 'Appointment Status Update';
-      const textUpdate = language === 'ar' ? `تم تحديث موعدك في ${appointment.date} الساعة ${appointment.time} إلى ${statusTrans}.` : `Your appointment on ${appointment.date} at ${appointment.time} has been updated to ${statusTrans}.`;
-      const htmlUpdate = language === 'ar' ? `<h2>تحديث حالة الموعد</h2><p>تم تحديث موعدك في ${appointment.date} الساعة ${appointment.time} إلى ${statusTrans}.</p><p><strong>الاسم:</strong> ${populatedAppointment.patient.name}</p><p><strong>الهاتف:</strong> ${populatedAppointment.patient.phone}</p>` : `<h2>Appointment Status Update</h2><p>Your appointment on ${appointment.date} at ${appointment.time} has been updated to ${statusTrans}.</p><p><strong>Name:</strong> ${populatedAppointment.patient.name}</p><p><strong>Phone:</strong> ${populatedAppointment.patient.phone}</p>`;
+      const textUpdate = language === 'ar' ? `تم تحديث موعدك في ${appointment.date} الساعة ${formatTime12Hour(appointment.time, language)} إلى ${statusTrans}.` : `Your appointment on ${appointment.date} at ${formatTime12Hour(appointment.time, language)} has been updated to ${statusTrans}.`;
+      const htmlUpdate = language === 'ar' ? `<h2>تحديث حالة الموعد</h2><p>تم تحديث موعدك في ${appointment.date} الساعة ${formatTime12Hour(appointment.time, language)} إلى ${statusTrans}.</p><p><strong>الاسم:</strong> ${populatedAppointment.patient.name}</p><p><strong>الهاتف:</strong> ${populatedAppointment.patient.phone}</p>` : `<h2>Appointment Status Update</h2><p>Your appointment on ${appointment.date} at ${formatTime12Hour(appointment.time, language)} has been updated to ${statusTrans}.</p><p><strong>Name:</strong> ${populatedAppointment.patient.name}</p><p><strong>Phone:</strong> ${populatedAppointment.patient.phone}</p>`;
 
       sendEmailNotification({
         from: '"Khashaba Clinic" <no-reply@khashaba-clinics.com>',
@@ -916,7 +931,7 @@ app.patch('/api/appointments/:id/status', verifyToken, [
       }, language);
     }
 
-    res.json({ message: language === 'ar' ? 'تم تحديث حالة الموعد' : 'Appointment status updated', appointment: populatedAppointment });
+    res.json({ message: language === 'ar' ? 'تم تحديث حالة الموعد' : 'Appointment status updated', appointment: { ...populatedAppointment, time: formatTime12Hour(populatedAppointment.time, language) } });
   } catch (error) {
     logger.error('خطأ في تحديث الحالة:', error);
     res.status(500).json({ message: 'خطأ في الخادم' });
@@ -929,18 +944,20 @@ app.delete('/api/appointments/:id', verifyToken, async (req, res) => {
     const appointment = await Appointment.findById(id);
     if (!appointment) return res.status(404).json({ message: 'الموعد غير موجود' });
 
+    const populatedAppointment = await Appointment.findById(id).populate('patient', 'name phone email').lean();
     await Appointment.findByIdAndDelete(id);
     await Patient.updateOne({ _id: appointment.patient }, { $pull: { appointments: id } });
 
     const activity = new Activity({
       appointmentId: id,
       action: 'deleted',
-      details: `تم حذف الموعد لـ ${appointment.date} الساعة ${appointment.time}`,
+      details: appointment.language === 'ar' ? `تم حذف الموعد لـ ${populatedAppointment.patient.name} في ${appointment.date} الساعة ${formatTime12Hour(appointment.time, appointment.language)}` : `Appointment deleted for ${populatedAppointment.patient.name} on ${appointment.date} at ${formatTime12Hour(appointment.time, appointment.language)}`,
       adminId: req.adminId,
     });
     await activity.save();
 
     io.emit('appointmentDeleted', { appointmentId: id });
+    io.emit('newActivity', activity);
 
     res.json({ message: 'تم حذف الموعد بنجاح' });
   } catch (error) {
@@ -951,7 +968,7 @@ app.delete('/api/appointments/:id', verifyToken, async (req, res) => {
 
 app.get('/api/patients', verifyToken, async (req, res) => {
   try {
-    const { search } = req.query;
+    const { search, language = 'ar' } = req.query;
     const query = search ? {
       $or: [
         { name: { $regex: search, $options: 'i' } },
@@ -960,8 +977,19 @@ app.get('/api/patients', verifyToken, async (req, res) => {
       ]
     } : {};
 
-    const patients = await Patient.find(query).populate('appointments').sort({ updatedAt: -1 }).lean();
-    res.json(patients);
+    const patients = await Patient.find(query).populate({
+      path: 'appointments',
+      select: 'date time status notes',
+      options: { sort: { date: -1 } },
+    }).sort({ updatedAt: -1 }).lean();
+
+    res.json(patients.map(patient => ({
+      ...patient,
+      appointments: patient.appointments.map(apt => ({
+        ...apt,
+        time: formatTime12Hour(apt.time, language),
+      })),
+    })));
   } catch (error) {
     logger.error('خطأ في جلب المرضى:', error);
     res.status(500).json({ message: 'خطأ في الخادم' });
@@ -971,12 +999,21 @@ app.get('/api/patients', verifyToken, async (req, res) => {
 app.get('/api/patients/:id', verifyToken, async (req, res) => {
   try {
     const { id } = req.params;
+    const { language = 'ar' } = req.query;
     const patient = await Patient.findById(id).populate({
       path: 'appointments',
+      select: 'date time status notes',
       options: { sort: { date: -1 } },
     }).lean();
     if (!patient) return res.status(404).json({ message: 'المريض غير موجود' });
-    res.json(patient);
+
+    res.json({
+      ...patient,
+      appointments: patient.appointments.map(apt => ({
+        ...apt,
+        time: formatTime12Hour(apt.time, language),
+      })),
+    });
   } catch (error) {
     logger.error('خطأ في جلب المريض:', error);
     res.status(500).json({ message: 'خطأ في الخادم' });
@@ -1034,6 +1071,7 @@ app.delete('/api/patients/:id', verifyToken, async (req, res) => {
 app.get('/api/patients/:phone/appointments', async (req, res) => {
   try {
     const { phone } = req.params;
+    const { language = 'ar' } = req.query;
     const patient = await Patient.findOne({ phone }).lean();
     if (!patient) return res.status(404).json({ message: 'المريض غير موجود' });
 
@@ -1041,25 +1079,22 @@ app.get('/api/patients/:phone/appointments', async (req, res) => {
       .populate('patient', 'name phone email')
       .sort({ date: -1, time: -1 })
       .lean();
-    res.json(appointments);
+    res.json(appointments.map(apt => ({ ...apt, time: formatTime12Hour(apt.time, language) })));
   } catch (error) {
     logger.error('خطأ في جلب مواعيد المريض:', error);
     res.status(500).json({ message: 'خطأ في الخادم' });
   }
 });
 
-// معالجة الأخطاء
 app.use((err, req, res, next) => {
   logger.error(`خطأ غير معالج: ${err.message}`, { stack: err.stack });
   res.status(500).json({ message: 'خطأ داخلي في الخادم' });
 });
 
-// تشغيل الخادم
 server.listen(PORT, () => {
   logger.info(`الخادم يعمل على المنفذ ${PORT}`);
 });
 
-// الإغلاق الآمن
 process.on('SIGTERM', async () => {
   logger.info('تلقي إشارة SIGTERM. إغلاق الخادم...');
   server.close(() => {
